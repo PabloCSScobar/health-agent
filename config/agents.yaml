@@ -1,0 +1,23 @@
+# Model per agent. "claude" -> settings.claude_model (Anthropic API),
+# "ollama" -> settings.ollama_model (lokalnie). Można też wpisać dowolny
+# literalny string modelu pydantic-ai (np. "anthropic:claude-sonnet-5").
+#
+# Konfiguracja produkcyjna, zweryfikowana scripts/eval_agents.py (3x pełny
+# przebieg, 39/39 PASS - patrz README.md z 2026-09-16):
+# - recovery/nutrition PRZESZŁY na Haiku 4.5 po dodaniu jawnej reguły
+#   "wywołaj ask_agent SAM, nie pytaj o zgodę" do _PROMPT_SUFFIX - wcześniej
+#   (bez tej reguły) słabszy model czasem opisywał że powinien skonsultować
+#   inny agentów zamiast to zrobić. Z regułą Haiku trzymał się jej za każdym
+#   razem w 3 niezależnych przebiegach.
+# - running zostaje na Sonnet 5 - najbardziej złożone zadanie (korelacja
+#   treningu z regeneracją/odżywianiem przy "dlaczego bieg wyszedł gorzej"),
+#   nie było testowane na Haiku.
+# - orchestrator/strength/body: proste zadania (routing, jednorazowy odczyt
+#   z jednej tabeli), Haiku 4.5 od początku.
+
+orchestrator: anthropic:claude-haiku-4-5
+running: anthropic:claude-sonnet-5
+strength: anthropic:claude-haiku-4-5
+nutrition: anthropic:claude-haiku-4-5
+body: anthropic:claude-haiku-4-5
+recovery: anthropic:claude-haiku-4-5

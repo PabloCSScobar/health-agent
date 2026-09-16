@@ -1,0 +1,34 @@
+[project]
+name = "health-agent"
+version = "0.1.0"
+description = "Osobisty kontener na dane zdrowotne i treningowe (Suunto/Intervals.icu, Fitatu, Fitdays), analizowany przez agentów LLM"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "apscheduler>=3.11.3",
+    "fastapi>=0.141.1",
+    "fitatu-api",
+    "psycopg[binary]>=3.3.5",
+    "pydantic-ai-slim[anthropic,openai]>=0.5.0",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.0.1",
+    "python-telegram-bot>=22.8",
+    "requests>=2.34.2",
+    "sqlalchemy>=2.0.54",
+    "uvicorn[standard]>=0.53.0",
+]
+
+[project.scripts]
+health-agent = "health_agent.cli.main:main"
+
+[tool.uv]
+
+[tool.uv.sources]
+fitatu-api = { git = "https://github.com/Jezue/fitatu_library" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/health_agent"]
