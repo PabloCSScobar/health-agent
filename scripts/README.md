@@ -493,3 +493,64 @@ remember_fact zaostrzony (fakt od użytkownika albo wzorzec >=3 obserwacje).
 Nie zrobione (świadomie, do TODO): 👍/👎 na Telegramie jako pętla zwrotna z
 produkcji; running na Haiku (test 3x jak przy recovery/nutrition, ale
 dopiero teraz jest sędzia, który by to uczciwie ocenił).
+
+**Pozostali coache + profil + bilans energetyczny (2026-09-17).** Ten sam
+wzorzec co RunningCoach (narzędzia liczące -> metodologia w `prompts/*.md`
+-> kontrakt odpowiedzi -> eval z sędzią), wszystkie cztery naraz na prośbę
+użytkownika (testy na realnych danych zrobi sam później).
+- **Profil użytkownika** (`tools/profile.py`): fakty podane wprost (wzrost,
+  wiek, płeć, cele, kontuzje, refluks, preferencje) w `agent_memory` pod
+  pseudo-agentem `user_profile`, wstrzykiwane do promptu KAŻDEGO
+  specjalisty. Bug złapany na żywo: `set_user_profile_fact` jako output
+  function orchestratora - przy "mam refluks i cel 84 kg" model wołał ją
+  2x w jednej turze, a pydantic-ai wykonuje tylko PIERWSZĄ output function;
+  drugi fakt przepadał. Fix: `set_user_profile_facts(dict)` (wszystkie
+  fakty jednym wywołaniem) jako ZWYKŁE narzędzie (tool_plain), nie output
+  function - da się łączyć z innymi w tej samej wiadomości, kosztuje jedną
+  tanią rundę Haiku na potwierdzenie. To samo ograniczenie dotyczy
+  `log_manual_entry`+cokolwiek w jednej wiadomości - rzadkie, zostawione.
+- **Szacunek całodniowego wydatku** (`tools/energy.py`): wpis ręczny >
+  szacunek Mifflin-St Jeor (waga z Fitdays + wzrost/wiek/płeć z profilu) +
+  kcal z treningów + NEAT z kroków poza treningiem + TEF. Bug złapany na
+  żywo: `daily_activity.calories_total` z Health Connect = 275 kcal "za
+  dobę" (kalorie jednego marszu zapisane przez apkę, nie suma dobowa) -
+  brane dosłownie dawało "bilans +2051". Wartość HC używana tylko gdy
+  >=80% BMR (doba poniżej BMR jest fizycznie niemożliwa), inaczej szacunek.
+  Bez wzrostu/wieku/płci w profilu szacunek jest niemożliwy - narzędzie
+  zwraca `missing`, coach prosi o uzupełnienie.
+- **nutrition**: `get_nutrition_summary` (średnie z dni Z DANYMI, białko
+  g/kg, makro %, cele z profilu albo 1.6-2.2 g/kg), `get_energy_balance`
+  (deficyt BEZ pytania recovery - zamyka najczęstsze pytanie użytkownika;
+  bug: `days=1` znaczyło "dziś", a "wczoraj" wymagało daty - dodane
+  `end_date`), `find_foods` (top produkty / szukaj).
+- **recovery**: `get_recovery_baseline` - jedna funkcja zamiast 3x
+  get_recovery_day: 7d/28d ±SD, z-score, dług snu, flagi (RHR +5, HRV <
+  -1SD, sen <6h), readiness (heurystyka z z-score).
+- **body**: `get_body_trend` - regresja kg/tydz. TYLKO przy >=3 pomiarach
+  na >=7 dni (dziś są 2 - narzędzie mówi to wprost i coach uczciwie
+  odmawia "trendu"), średnia 7d, cel z profilu, porównanie z oczekiwanym z
+  bilansu energetycznego.
+- **strength** (`tools/strength.py`, nowy): kanoniczny schemat wpisu
+  (cwiczenia/nazwa/serie/powtorzenia/ciezar_kg - orchestrator ma go w
+  prompcie) + parser tolerujący warianty (polskie znaki, exercises/reps/kg,
+  serie jako lista), e1RM Epley (<=12 powt.), objętość, PR, serie per grupa
+  mięśniowa (mapowanie po słowach kluczowych), sesje z zegarka
+  (WeightTraining) jako "trening był, szczegółów brak". Dziś 0 prawdziwych
+  wpisów - coach odpowiada "nie mam danych, wpisuj w formacie X".
+- Dane: replay payloadu 43 naprawił duplikaty odżywiania z 15-16.09 -
+  wczorajsze sprzątanie zostawiło wiersze ze STARYM hashem (usunąłem
+  nowsze, poprawne), więc każdy kolejny sync dopisywał je od nowa.
+  Właściwa metoda: usunąć pozycje z dni objętych payloadem i przepuścić
+  surowy payload przez obecny kod (do tego jest `raw_payloads`), a nie
+  wybierać ręcznie, który duplikat zostawić. 15.09 = 2075 kcal (zgodne z
+  użytkownikiem), 16.09 = 2326; 0 wierszy z niezgodnym hashem.
+- Usunięte artefakty testów: wpis siłowy z testu output functions (model
+  uciął znacznik `[OUTFN-TEST]`, wyglądał jak prawdziwy) i duplikat "2800
+  kcal" sprzed dedupu. Profil testowy (35 lat/180 cm/M/refluks/84 kg)
+  usunięty po evalu - użytkownik ma podać PRAWDZIWE wartości na Telegramie
+  ("mam X lat, Y cm, cel Z kg"), inaczej BMR/deficyt/cele nie działają.
+- Eval: `scripts/eval_agents.py coaches` (albo `recovery|nutrition|body|
+  strength`) - inwarianty narzędzi (z-score/SD/dług snu, średnie, bilans =
+  intake - wydatek, end_date, HC-partial, body <3 punktów, parser 4
+  wariantów, profil roundtrip) + 11 pytań + sędzia (dla pytań o FAKT próg
+  2/5, bo krótka odpowiedź bez rekomendacji jest tam poprawna).

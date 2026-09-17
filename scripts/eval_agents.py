@@ -11,6 +11,7 @@ registry.py albo modelu w config/agents.yaml:
 
     uv run python scripts/eval_agents.py            # core (routing, wpisy) - tanio
     uv run python scripts/eval_agents.py running    # RunningCoach: narzędzia + 6 pytań + sędzia LLM
+    uv run python scripts/eval_agents.py coaches    # recovery+nutrition+body+strength (albo jedna nazwa)
     uv run python scripts/eval_agents.py all
 
 Testy 10-12 (wpisy ręczne) same sprzątają po sobie z bazy - bezpieczne do
@@ -20,6 +21,7 @@ uruchomienia na produkcyjnej bazie, ale i tak najlepiej robić to lokalnie/dev.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -123,45 +125,52 @@ def case_recovery_consults_nutrition_for_deficit() -> Case:
     na konsultację z nutrition zamiast po prostu wywołać ask_agent."""
 
     def check(answer: str, routing: list[RoutingRow]) -> list[str]:
-        errors = _expect_delegate("recovery")(answer, routing)
+        # Od 2026-09-17 deficyt liczy nutrition JEDNYM narzędziem
+        # (get_energy_balance: zjedzone - wydatek); wcześniej recovery musiało
+        # konsultować nutrition przez ask_agent. Wspólny inwariant obu wersji:
+        # nikt nie pyta użytkownika o zgodę na sprawdzenie i nie opisuje
+        # wywołania narzędzia zamiast je wykonać.
+        errors = _expect_delegate("nutrition")(answer, routing)
         errors += _no_described_not_executed_tool_calls(answer, routing)
-        called = _called(routing)
+        if "get_energy_balance" not in _tools_used_by("nutrition"):
+            errors.append(f"nutrition nie użył get_energy_balance (użył: {_tools_used_by('nutrition')})")
         lowered = answer.lower()
-        asks_permission = any(
-            p in lowered for p in ("chcesz, żebym zapytał", "czy mam zapytać", "chcesz żebym sprawdził nutrition")
-        )
-        if "nutrition" not in called and asks_permission:
-            errors.append(
-                "recovery zapytał użytkownika o zgodę na konsultację z nutrition zamiast ją po prostu wywołać"
-            )
+        if any(p in lowered for p in ("chcesz, żebym zapytał", "czy mam zapytać", "chcesz żebym sprawdził")):
+            errors.append("agent pyta użytkownika o zgodę na sprawdzenie danych zamiast je sprawdzić")
         return errors
 
     return Case(
-        name="recovery konsultuje nutrition przy pytaniu o deficyt (bez pytania o zgodę)",
+        name="deficyt -> nutrition liczy bilans samo (bez pytania o zgodę)",
         question="Jaki miałem wczoraj deficyt kaloryczny?",
         check=check,
     )
 
 
 def case_manual_strength() -> Case:
-    marker = "EVAL-MARKER-STRENGTH-4x8-80kg-dipy-3x12"
-    question = f"dziś klata: wyciskanie sztangi 4x8 80kg, dipy 3x12 [{marker}]"
+    # Nietypowe ćwiczenie w treści = marker; model potrafi uciąć doklejony
+    # znacznik z text_original (złapane na żywo), więc dopasowujemy prefiksem.
+    prefix = "dziś klata: wyciskanie sztangi 4x8 80kg, dipy 3x12, EVAL-ćwiczenie-testowe 2x5"
+    question = prefix
 
     def check(answer: str, routing: list[RoutingRow]) -> list[str]:
         errors = _expect_only_orchestrator()(answer, routing)
         with get_session() as session:
             rows = session.execute(
-                select(ManualLog).where(ManualLog.text_original == question)
+                select(ManualLog).where(ManualLog.text_original.like(prefix[:40] + "%"))
             ).scalars().all()
         if len(rows) != 1:
             errors.append(f"oczekiwano dokładnie 1 wiersza w manual_logs, jest {len(rows)}")
-        elif rows[0].kind != "strength":
-            errors.append(f"zły kind: {rows[0].kind!r} (oczekiwano 'strength')")
+        else:
+            if rows[0].kind != "strength":
+                errors.append(f"zły kind: {rows[0].kind!r} (oczekiwano 'strength')")
+            exs = (rows[0].payload_json or {}).get("cwiczenia")
+            if not isinstance(exs, list) or len(exs) < 2 or "nazwa" not in exs[0] or "serie" not in exs[0]:
+                errors.append(f"payload nie w kanonicznym schemacie (cwiczenia/nazwa/serie/powtorzenia/ciezar_kg): {rows[0].payload_json}")
         return errors
 
     def cleanup() -> None:
         with get_session() as session:
-            session.execute(delete(ManualLog).where(ManualLog.text_original == question))
+            session.execute(delete(ManualLog).where(ManualLog.text_original.like(prefix[:40] + "%")))
 
     return Case(name="wpis ręczny: trening siłowy", question=question, check=check, cleanup=cleanup)
 
@@ -348,23 +357,27 @@ def unit_test_running_tools() -> list[str]:
     return errors
 
 
-def _expect_running_tools(*tools: str, consult: str | None = None):
-    """running został wywołany, użył KAŻDEGO z podanych narzędzi (nie tylko
+def _expect_tools(agent: str, *tools: str, consult: str | None = None):
+    """`agent` został wywołany, użył KAŻDEGO z podanych narzędzi (nie tylko
     wylistował je w tekście) i - opcjonalnie - sam skonsultował innego
     specjalistę (regresja na 'opisuje zamiast wywołać')."""
 
     def check(answer: str, routing: list[RoutingRow]) -> list[str]:
-        errors = _expect_delegate("running")(answer, routing)
+        errors = _expect_delegate(agent)(answer, routing)
         errors += _no_described_not_executed_tool_calls(answer, routing)
-        used = _tools_used_by("running")
+        used = _tools_used_by(agent)
         for t in tools:
             if t not in used:
-                errors.append(f"running nie użył `{t}` (użył: {used})")
+                errors.append(f"{agent} nie użył `{t}` (użył: {used})")
         if consult and consult not in _called(routing):
-            errors.append(f"running nie skonsultował `{consult}` przez ask_agent (wywołani: {sorted(_called(routing))})")
+            errors.append(f"{agent} nie skonsultował `{consult}` przez ask_agent (wywołani: {sorted(_called(routing))})")
         return errors
 
     return check
+
+
+def _expect_running_tools(*tools: str, consult: str | None = None):
+    return _expect_tools("running", *tools, consult=consult)
 
 
 RUNNING_CASES: list[Case] = [
@@ -388,23 +401,43 @@ RUNNING_CASES: list[Case] = [
          _expect_running_tools("get_running_profile")),
 ]
 
-JUDGE_CRITERIA = (
-    "1. LICZBY: odpowiedź podaje 2-4 konkretne liczby z datą/okresem (tempo, tętno, km, %, TSB itp.).\n"
-    "2. WZGLĘDEM BAZY: interpretuje je względem bazy/trendu/stref tego biegacza (np. 'powyżej Twojej "
-    "średniej', 'w Z2', 'vs poprzedni tydzień'), a nie tylko podaje wartości.\n"
-    "3. JEDNA REKOMENDACJA: jest dokładnie jedna konkretna, wykonalna rekomendacja na najbliższe dni "
-    "(dystans/tempo/strefa/dzień) - nie lista ogólników typu 'słuchaj organizmu'.\n"
-    "4. PEWNOŚĆ: jest jawna ocena pewności (wysoka/średnia/niska) i czego brakuje.\n"
-    "5. BEZ ZMYŚLANIA: nie ma sformułowań sugerujących dane, których agent nie może mieć (VO2max, "
-    "Training Effect, nawodnienie, temperatura ciała, 'czułeś się' bez feel), ani porad medycznych."
+JUDGE_CRITERIA_ANALYSIS = (
+    "1. LICZBY: odpowiedź podaje 2-4 konkretne liczby z datą/okresem.\n"
+    "2. WZGLĘDEM BAZY: interpretuje je względem bazy/trendu/celu/zakresu TEGO użytkownika (np. 'powyżej Twojej "
+    "średniej', 'w zakresie 1.6-2.2 g/kg', 'vs poprzedni tydzień'), a nie tylko podaje wartości.\n"
+    "3. JEDNA REKOMENDACJA: dokładnie jedna konkretna, wykonalna rekomendacja W DOMENIE agenta: running - dystans/"
+    "tempo/strefa/dzień; recovery - dzień lekki/normalny/mocny lub konkretne działanie (godzina snu); nutrition - "
+    "produkt/ilość/pora/zamiana; body - co zmienić (lub nic) i kiedy sprawdzić ponownie; strength - ciężar/zakres/"
+    "ćwiczenie/dzień. 'Słuchaj organizmu' albo lista 3 rad = 0.\n"
+    "4. PEWNOŚĆ: jawna ocena pewności (wysoka/średnia/niska) i czego brakuje.\n"
+    "5. BEZ ZMYŚLANIA: brak danych, których agent nie może mieć (VO2max, Training Effect, nawodnienie, samopoczucie "
+    "bez wpisu), brak DIAGNOZ medycznych (odesłanie do lekarza/fizjo przy objawach jest OK i pożądane).\n"
+    "WYJĄTEK: jeśli narzędzia nie miały danych i odpowiedź mówi to WPROST oraz podaje, co zrobić, żeby dane były "
+    "(np. format wpisu) - kryteria 1-3 uznaj za spełnione (1). Zmyślenie liczb przy braku danych = 0 w 5."
+)
+JUDGE_CRITERIA_FACT = (
+    "To pytanie o FAKT (np. 'ile ważę', 'ile białka wczoraj') - poprawna odpowiedź jest KRÓTKA (1-3 zdania) i NIE "
+    "musi zawierać rekomendacji ani oceny pewności.\n"
+    "1. LICZBY: podaje liczbę(y) z datą/dniem, o które pytano.\n"
+    "2. ODNIESIENIE: jedno krótkie odniesienie do bazy/celu/zakresu (np. '1,75 g/kg', 'baza 71±11', 'do celu 3,4 kg') "
+    "- jeśli danych do odniesienia obiektywnie brak (pusty profil, 1 pomiar), brak odniesienia jest OK (1).\n"
+    "3. ZWIĘZŁOŚĆ: nie rozpisuje pełnej analizy ani listy rad; krótka oferta pogłębienia jest OK.\n"
+    "4. BEZ UNIKU: nie odpowiada pytaniem na pytanie zamiast podać liczbę.\n"
+    "5. BEZ ZMYŚLANIA: tylko liczby z danych; brak = powiedziane wprost."
 )
 
 
-async def judge_running_answer(question: str, answer: str) -> tuple[int, list[str]]:
-    """Sędzia LLM (Haiku, tanio) - sprawdza KONTRAKT odpowiedzi RunningCoach
-    z prompts/running.md, NIE poprawność liczb (tego bez dostępu do wyników
+async def judge_running_answer(question: str, answer: str, mode: str = "analysis") -> tuple[int, list[str]]:
+    """Sędzia LLM (Haiku, tanio) - sprawdza KONTRAKT odpowiedzi specjalisty
+    z prompts/<agent>.md, NIE poprawność liczb (tego bez dostępu do wyników
     narzędzi nie da się ocenić; liczby pilnują testy jednostkowe + zasada
-    'tylko z narzędzi' w promptcie). Miękki sygnał: próg 4/5."""
+    'tylko z narzędzi' w promptcie). `mode`: "analysis" (pełny format) albo
+    "fact" (krótka odpowiedź faktograficzna). Miękki sygnał: próg 4/5.
+    Kalibracja 2026-09-17: pierwsza wersja karała pytania o fakt za brak
+    rekomendacji, strength za 'zero liczb' przy braku danych, recovery za
+    brak tempa/dystansu (kryterium było biegowe) i nutrition za odesłanie
+    do lekarza - wszystko zgodne z promptami, więc to sędzia był źle
+    skalibrowany, nie coache."""
     from pydantic import BaseModel
     from pydantic_ai import Agent
 
@@ -414,15 +447,188 @@ async def judge_running_answer(question: str, answer: str) -> tuple[int, list[st
         scores: list[int]  # 5 x 0/1 w kolejności kryteriów
         failed_reasons: list[str] = []
 
+    criteria = JUDGE_CRITERIA_FACT if mode == "fact" else JUDGE_CRITERIA_ANALYSIS
     judge = Agent(
         _build_anthropic_model("anthropic:claude-haiku-4-5"),
-        system_prompt="Jesteś surowym recenzentem odpowiedzi trenera biegowego. Oceń KAŻDE kryterium 0 albo 1. "
-        "Odpowiedz wyłącznie strukturą. Kryteria:\n" + JUDGE_CRITERIA,
+        system_prompt="Jesteś surowym, ale sprawiedliwym recenzentem odpowiedzi trenera/analityka zdrowia. Oceń KAŻDE "
+        "kryterium 0 albo 1, zgodnie z jego definicją (nie dokładaj własnych wymagań). Odpowiedz wyłącznie strukturą. "
+        "Kryteria:\n" + criteria,
         output_type=Verdict,
     )
-    r = await judge.run(f"PYTANIE UŻYTKOWNIKA:\n{question}\n\nODPOWIEDŹ TRENERA:\n{answer}")
+    r = await judge.run(f"PYTANIE UŻYTKOWNIKA:\n{question}\n\nODPOWIEDŹ:\n{answer}")
     v = r.output
     return sum(v.scores[:5]), v.failed_reasons
+
+
+
+# ---------------------------------------------------------------------------
+# Pozostali coache (recovery / nutrition / body / strength) + profil - ten sam
+# wzorzec co running: inwarianty narzędzi bez LLM, pytania z asercjami na
+# narzędzia, sędzia LLM na kontrakt odpowiedzi.
+# ---------------------------------------------------------------------------
+
+def unit_test_coach_tools() -> list[str]:
+    import datetime as dt
+    import statistics
+
+    from sqlalchemy import delete as _delete
+
+    from health_agent.db.models import AgentMemory, ManualLog
+    from health_agent.tools import body as B
+    from health_agent.tools import nutrition as N
+    from health_agent.tools import profile as P
+    from health_agent.tools import recovery as Rc
+    from health_agent.tools import strength as S
+    from health_agent.tools.energy import estimate_daily_expenditure
+
+    errors: list[str] = []
+
+    rb = Rc.get_recovery_baseline(28)
+    if "metrics" in rb:
+        for name, m in rb["metrics"].items():
+            if m["baseline_sd"] is not None and m["baseline_sd"] < 0:
+                errors.append(f"recovery: ujemne SD dla {name}")
+            if m["latest"] is not None and m["z_latest_vs_baseline"] is not None and m["baseline_sd"]:
+                if (m["latest"] - m["baseline_mean"]) * m["z_latest_vs_baseline"] < 0:
+                    errors.append(f"recovery: znak z-score niezgodny z odchyleniem dla {name}")
+        sh = rb["sleep_hours"]
+        if sh["last_7_days"] and sh["debt_7d_h_vs_target"] is not None:
+            expected = round(sum(sh["target_h"] - d["h"] for d in sh["last_7_days"] if d["h"] is not None), 1)
+            if abs(expected - sh["debt_7d_h_vs_target"]) > 0.15:
+                errors.append(f"recovery: dług snu {sh['debt_7d_h_vs_target']} != {expected}")
+        if rb["readiness"]["label"] is None and rb["readiness"]["composite_z"] is not None:
+            errors.append("recovery: readiness bez etykiety")
+
+    ns = N.get_nutrition_summary(30)
+    if ns["days_with_data"]:
+        if ns["avg"]["kcal"] != round(statistics.mean(d["kcal"] for d in ns["days"])):
+            errors.append("nutrition: średnia kcal nie zgadza się z dniami")
+        w = ns["protein_target"]["weight_kg_used"]
+        if w and ns["protein_g_per_kg"] is not None and abs(ns["protein_g_per_kg"] - ns["avg"]["protein_g"] / w) > 0.02:
+            errors.append("nutrition: białko g/kg != białko/waga")
+        if ns["days_with_data"] != len(ns["days"]):
+            errors.append("nutrition: days_with_data != len(days)")
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    eb = N.get_energy_balance(7, end_date=yesterday)
+    if eb["period"]["to"] != yesterday.isoformat():
+        errors.append("nutrition: end_date nie respektowane w get_energy_balance")
+    for d in eb["days"]:
+        if d["balance_kcal"] is not None and d["balance_kcal"] != round(d["intake_kcal"] - d["expenditure_kcal"]):
+            errors.append(f"nutrition: bilans {d['date']} != intake - expenditure")
+    ff = N.find_foods(None, 30, "protein_g")
+    if len(ff["items"]) > 1 and any(ff["items"][i]["total_protein_g"] < ff["items"][i + 1]["total_protein_g"] for i in range(len(ff["items"]) - 1)):
+        errors.append("nutrition: find_foods nie posortowane malejąco po białku")
+
+    exp = estimate_daily_expenditure(dt.date(2026, 9, 16))
+    if exp["method"] == "healthconnect" and exp["total_kcal"] < 1200:
+        errors.append("energy: wartość HC < 1200 kcal uznana za całodniowy wydatek")
+
+    bt = B.get_body_trend(30)
+    if bt.get("points", 0) and bt["points"] < B.MIN_POINTS_FOR_TREND and bt["slope_kg_per_week"] is not None:
+        errors.append("body: nachylenie policzone z <3 pomiarów")
+    if bt.get("points", 0) and "za mało" not in bt["data_sufficiency"] and bt["slope_kg_per_week"] is None:
+        errors.append("body: wystarczające dane, a brak nachylenia")
+
+    variants = [
+        ({"cwiczenia": [{"nazwa": "wyciskanie sztangi", "serie": 4, "powtorzenia": 8, "ciezar_kg": 80}]}, "klatka", 4, 101.3),
+        ({"ćwiczenia": [{"nazwa": "Przysiad", "serie": [{"powtórzenia": 5, "ciężar_kg": 100}, {"powtórzenia": 5, "ciężar_kg": 105}]}]}, "nogi", 2, 122.5),
+        ({"exercises": [{"name": "Martwy ciąg", "sets": 3, "reps": 5, "kg": 120}]}, "plecy", 3, 140.0),
+        ({"cwiczenia": [{"nazwa": "dipy", "serie": 3, "powtorzenia": 12}]}, "klatka", 3, None),
+    ]
+    for payload, muscle, sets, e1rm in variants:
+        lg = ManualLog(kind="strength", payload_json=payload, text_original="t", logged_at=dt.datetime.now(dt.timezone.utc))
+        lg.id = 0
+        ex = S._parse_log(lg)["exercises"][0]
+        if ex["muscle"] != muscle or ex["sets"] != sets or ex["e1rm_kg"] != e1rm:
+            errors.append(f"strength: parser {payload} -> {ex['muscle']}/{ex['sets']}/{ex['e1rm_kg']} (oczekiwano {muscle}/{sets}/{e1rm})")
+
+    marker_key, marker_val = "inne", "EVAL-MARKER-PROFILE-xyz"
+    before = P.get_user_profile().get(marker_key)
+    try:
+        P.set_user_profile_facts({marker_key: marker_val, "nieznany klucz": "x"})
+        prof = P.get_user_profile()
+        if prof.get("inne") not in (marker_val, "x"):
+            errors.append("profile: zapis/odczyt nie działa")
+        if "nieznany_klucz" in prof:
+            errors.append("profile: nieznany klucz nie został zmapowany na 'inne'")
+    finally:
+        with get_session() as session:
+            if before is None:
+                session.execute(_delete(AgentMemory).where(AgentMemory.agent == P.PROFILE_AGENT, AgentMemory.key == marker_key))
+            else:
+                P.remember(P.PROFILE_AGENT, marker_key, before)
+    return errors
+
+
+COACH_CASES: dict[str, list[Case]] = {
+    "recovery": [
+        Case("recovery: fakt (HRV wczoraj)", "Jakie miałem wczoraj HRV?", _expect_tools("recovery", "get_recovery_day")),
+        Case("recovery: ocena tygodnia", "Jak się regeneruję w tym tygodniu?", _expect_tools("recovery", "get_recovery_baseline")),
+        Case("recovery: zmęczenie / gotowość", "Czy jestem zmęczony? Mogę dziś mocno trenować?", _expect_tools("recovery", "get_recovery_baseline")),
+    ],
+    "nutrition": [
+        Case("nutrition: fakt (białko wczoraj)", "Ile białka zjadłem wczoraj?", _expect_tools("nutrition", "get_nutrition_day")),
+        Case("nutrition: fakt (deficyt wczoraj) -> bez pytania recovery", "Jaki miałem wczoraj deficyt kaloryczny?", _expect_tools("nutrition", "get_energy_balance")),
+        Case("nutrition: ocena diety", "Jak wygląda moja dieta w ostatnich dniach? Co poprawić?", _expect_tools("nutrition", "get_nutrition_summary")),
+        Case("nutrition: skąd makro", "Skąd mam tyle tłuszczu w diecie?", _expect_tools("nutrition", "find_foods")),
+    ],
+    "body": [
+        Case("body: fakt (waga)", "Ile ważę?", _expect_tools("body")),
+        Case("body: trend / cel", "Czy chudnę? Kiedy dojdę do celu?", _expect_tools("body", "get_body_trend")),
+    ],
+    "strength": [
+        Case("strength: fakt (sesje)", "Co ostatnio robiłem na siłowni?", _expect_tools("strength", "get_strength_sessions")),
+        Case("strength: progres ćwiczenia", "Czy robię postępy w wyciskaniu?", _expect_tools("strength", "get_exercise_progress")),
+    ],
+}
+
+
+async def run_coach_suite(names: list[str]) -> tuple[int, int, float]:
+    print("=== Coache: testy jednostkowe narzędzi + profil (bez LLM) ===")
+    errs = unit_test_coach_tools()
+    print(f"{'PASS' if not errs else 'FAIL'}: narzędzia recovery/nutrition/body/strength/profile" + "".join(f"\n    - {e}" for e in errs))
+    failures = 1 if errs else 0
+    total_cost, n = 0.0, 1
+    for name in names:
+        print(f"\n=== {name}: pytania + sędzia LLM ===")
+        for case in COACH_CASES[name]:
+            _clear_agent_runs()
+            start = time.monotonic()
+            answer = await ask_orchestrator_async(case.question)
+            duration = time.monotonic() - start
+            errors = case.check(answer, _routing())
+            cost = _total_cost()
+            if name == "strength" and not _strength_has_data():
+                # Bez wpisów siłowych sędzia nie ma czego oceniać - Haiku
+                # losowo ignoruje klauzulę "brak danych" (ta sama odpowiedź
+                # raz 5/5, raz 2/5). Deterministycznie: coach ma uczciwie
+                # powiedzieć, że danych brak, i nie wymyślać ciężarów.
+                score = -1
+                if not re.search(r"nie mam|brak|nie ma (wpis|dan)|żadn", answer.lower()):
+                    errors.append("strength bez danych: odpowiedź nie mówi wprost, że brak wpisów")
+                if re.search(r"e1rm\s*[:=]?\s*\d|\d+\s*kg\s*x\s*\d", answer.lower()) and "np." not in answer.lower():
+                    errors.append("strength bez danych: odpowiedź zawiera konkretne ciężary/e1RM - skąd?")
+            else:
+                mode = "fact" if "fakt" in case.name else "analysis"
+                score, reasons = await judge_running_answer(case.question, answer, mode=mode)
+                if score < 4:
+                    errors.append(f"sędzia: {score}/5 - " + "; ".join(reasons))
+            total_cost += cost
+            n += 1
+            status = "PASS" if not errors else "FAIL"
+            judge_str = f"sędzia {score}/5" if score >= 0 else "sędzia pominięty (brak danych)"
+            print(f"{status}: {case.name}  ({duration:.1f}s, ${cost:.4f}, {judge_str})")
+            for e in errors:
+                print(f"    - {e}")
+            if errors:
+                failures += 1
+    return failures, n, total_cost
+
+
+def _strength_has_data() -> bool:
+    from health_agent.tools.strength import get_strength_sessions
+
+    return bool(get_strength_sessions(90)["manual_sessions"])
 
 
 async def run_running_suite() -> tuple[int, int, float]:
@@ -471,6 +677,11 @@ async def main() -> None:
     suite = sys.argv[1] if len(sys.argv) > 1 else "core"
     if suite == "running":
         failures, n, cost = await run_running_suite()
+        print(f"\nRazem: {n} testów, {failures} nieudanych, koszt LLM: ${cost:.4f}")
+        sys.exit(1 if failures else 0)
+    if suite in COACH_CASES or suite == "coaches":
+        names = list(COACH_CASES) if suite == "coaches" else [suite]
+        failures, n, cost = await run_coach_suite(names)
         print(f"\nRazem: {n} testów, {failures} nieudanych, koszt LLM: ${cost:.4f}")
         sys.exit(1 if failures else 0)
 

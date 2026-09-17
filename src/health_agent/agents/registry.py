@@ -13,11 +13,19 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from health_agent.agents.base import build_agent, run_agent, run_agent_sync
-from health_agent.tools.body import get_body_composition_latest, get_body_composition_trend
-from health_agent.tools.manual import get_recent_manual_logs, log_manual_entry
+from health_agent.tools.body import get_body_composition_latest, get_body_composition_trend, get_body_trend
+from health_agent.tools.energy import estimate_daily_expenditure
+from health_agent.tools.manual import log_manual_entry
 from health_agent.tools.memory import recall_all, remember
-from health_agent.tools.nutrition import get_nutrition_day, get_nutrition_range
-from health_agent.tools.recovery import get_recovery_day, get_recovery_range
+from health_agent.tools.nutrition import (
+    find_foods,
+    get_energy_balance,
+    get_nutrition_day,
+    get_nutrition_range,
+    get_nutrition_summary,
+)
+from health_agent.tools.profile import get_user_profile, profile_prompt_block, set_user_profile_facts
+from health_agent.tools.recovery import get_recovery_baseline, get_recovery_day, get_recovery_range
 from health_agent.tools.running import (
     analyze_run,
     find_comparable_runs,
@@ -27,6 +35,7 @@ from health_agent.tools.running import (
     get_running_profile,
     get_weekly_running_load,
 )
+from health_agent.tools.strength import get_exercise_progress, get_strength_sessions, get_strength_weekly_volume
 from health_agent.tools.workouts import get_latest_workout, get_workouts, get_workouts_on_date
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -92,40 +101,27 @@ SPECIALISTS: dict[str, tuple[str, list]] = {
         ],
     ),
     "strength": (
-        "Jesteś trenerem siłowym (StrengthCoach). Analizujesz treningi siłowe "
-        "zapisane ręcznie przez użytkownika: progresję, objętość." + _PROMPT_SUFFIX,
-        [get_recent_manual_logs],
+        _load_prompt("strength") + _PROMPT_SUFFIX,
+        [get_strength_sessions, get_exercise_progress, get_strength_weekly_volume],
     ),
     "nutrition": (
-        "Jesteś dietetykiem (NutritionCoach). Analizujesz WYŁĄCZNIE kalorie i "
-        "makroskładniki ZJEDZONE (dziennik jedzenia z Fitatu) - NIE masz "
-        "dostępu do kalorii SPALONYCH na treningu (to domena 'running')." + _PROMPT_SUFFIX,
-        [get_nutrition_day, get_nutrition_range],
+        _load_prompt("nutrition") + _PROMPT_SUFFIX,
+        [get_nutrition_summary, get_energy_balance, find_foods, get_nutrition_day, get_nutrition_range],
     ),
     "body": (
-        "Jesteś analitykiem składu ciała (BodyCompCoach). Analizujesz wagę, "
-        "tkankę tłuszczową, masę mięśniową - trendy 7/30-dniowe." + _PROMPT_SUFFIX,
-        [get_body_composition_latest, get_body_composition_trend],
+        _load_prompt("body") + _PROMPT_SUFFIX,
+        [get_body_trend, get_body_composition_latest, get_body_composition_trend],
     ),
     "recovery": (
-        "Jesteś analitykiem regeneracji (RecoveryAnalyst). Analizujesz sen, HRV, "
-        "tętno spoczynkowe, kroki, CAŁODNIOWY wydatek kaloryczny (jeśli "
-        "dostępny - pola calories_active/calories_total mogą być puste, "
-        "zależnie od źródła; jeśli puste, powiedz wprost że tej danej nie "
-        "ma, nie zgaduj) - jak organizm radzi sobie z obciążeniem. Do pytań "
-        "o KONKRETNY dzień ('wczoraj', 'dziś', 'w poniedziałek' - przelicz "
-        "na datę używając dzisiejszej daty wyżej) używaj get_recovery_day - "
-        "NIGDY nie zgaduj liczby dni wstecz w get_recovery_range dla "
-        "pytania o jeden dzień. get_recovery_range tylko do TRENDÓW "
-        "(zmiana w czasie, średnie z tygodnia itp.)." + _PROMPT_SUFFIX,
-        [get_recovery_day, get_recovery_range],
+        _load_prompt("recovery") + _PROMPT_SUFFIX,
+        [get_recovery_baseline, get_recovery_day, get_recovery_range, estimate_daily_expenditure],
     ),
 }
 
 ORCHESTRATOR_PROMPT = (
     "Jesteś routerem. NIGDY nie znasz odpowiedzi sam - nie masz żadnych "
-    "danych użytkownika w pamięci, tylko dostęp do narzędzi `delegate` i "
-    "`log_manual_entry`.\n\n"
+    "danych użytkownika w pamięci, tylko dostęp do narzędzi `delegate`, "
+    "`log_manual_entry` i `set_user_profile_facts`.\n\n"
     "ZASADA 1 (pytania): każde pytanie o dane (kroki, waga, sen, treningi, "
     "jedzenie, HRV, tętno) MUSI najpierw przejść przez `delegate`, zanim "
     "cokolwiek odpowiesz - nawet jeśli wydaje Ci się, że znasz odpowiedź. "
@@ -140,12 +136,22 @@ ORCHESTRATOR_PROMPT = (
     "- 'spaliłem dziś 2400 kalorii' (z zegarka/apki, nie zgadywanie) -> "
     "log_manual_entry(kind='daily_calories', payload={'calories_total': "
     "2400})\n"
-    "- 'dziś klata: wyciskanie 4x8 80kg' -> log_manual_entry(kind='strength', "
-    "payload={'ćwiczenia': [...]}) - zapisz WSZYSTKIE podane szczegóły w "
-    "payload, strukturyzując je sensownie.\n"
+    "- 'dziś klata: wyciskanie 4x8 80kg, dipy 3x12' -> log_manual_entry("
+    "kind='strength', payload={'cwiczenia': [{'nazwa': 'wyciskanie sztangi', "
+    "'serie': 4, 'powtorzenia': 8, 'ciezar_kg': 80}, {'nazwa': 'dipy', "
+    "'serie': 3, 'powtorzenia': 12}]}) - DOKŁADNIE te klucze bez polskich "
+    "znaków (cwiczenia/nazwa/serie/powtorzenia/ciezar_kg); brak ciężaru = "
+    "pomiń ciezar_kg (masa ciała); różne serie -> 'serie': [{'powtorzenia': "
+    "5, 'ciezar_kg': 100}, ...]; 'notatka' na resztę (RPE, uwagi).\n"
     "Zawsze ustaw `text_original` na dokładny, oryginalny tekst "
-    "użytkownika. Po zapisie krótko potwierdź co zapisałeś - NIE deleguj "
-    "wpisów do specjalistów, to nie pytanie.\n\n"
+    "użytkownika. NIE deleguj wpisów do specjalistów, to nie pytanie.\n\n"
+    "ZASADA 3 (profil): gdy użytkownik podaje fakt O SOBIE (nie pomiar z "
+    "dziś): wiek, wzrost, płeć, cel wagi/kcal/białka, cel biegowy, staż, "
+    "kontuzja, choroba/problem zdrowotny (refluks, alergia), preferencje "
+    "żywieniowe, suplementy -> `set_user_profile_facts({klucz: wartość, ...})` "
+    "- WSZYSTKIE fakty z wiadomości w JEDNYM wywołaniu (klucze w opisie "
+    "narzędzia), potem jedno zdanie potwierdzenia. "
+    "'Ważę 87' to pomiar (ZASADA 2), 'chcę ważyć 84' to cel (ZASADA 3).\n\n"
     "Przykład pytania:\n"
     "user: Ile miałem wczoraj kroków?\n"
     "-> wywołaj delegate(agent_name='recovery', question='ile kroków wczoraj?')\n"
@@ -169,8 +175,9 @@ ORCHESTRATOR_PROMPT = (
     "Jeśli pytanie dotyczy kilku "
     "dziedzin naraz (np. 'dlaczego bieg wyszedł gorzej'), zdeleguj do "
     "najbardziej pasującego specjalisty - on sam dopyta pozostałych przez "
-    "własne narzędzia. Odpowiadaj po polsku, zwięźle, w stylu wiadomości "
-    "na czacie."
+    "własne narzędzia. Pytanie o DEFICYT/BILANS kaloryczny -> nutrition "
+    "(ma get_energy_balance liczący zjedzone minus wydatek). Odpowiadaj po "
+    "polsku, zwięźle, w stylu wiadomości na czacie."
 )
 
 
@@ -193,11 +200,15 @@ def _make_ask_agent_tool(caller_name: str):
 
 
 def _prompt_with_memory(agent_name: str, base_prompt: str) -> str:
+    """Prompt specjalisty + PROFIL użytkownika (fakty od niego: cele, wzrost,
+    kontuzje - patrz tools/profile.py) + fakty zapamiętane przez tego agenta.
+    Obie rzeczy są statyczne między pytaniami -> lądują w prompt cache."""
+    prompt = base_prompt + profile_prompt_block()
     facts = recall_all(agent_name)
-    if not facts:
-        return base_prompt
-    facts_block = "\n".join(f"- {k}: {v}" for k, v in facts.items())
-    return f"{base_prompt}\n\nFakty zapamiętane z poprzednich rozmów:\n{facts_block}"
+    if facts:
+        facts_block = "\n".join(f"- {k}: {v}" for k, v in facts.items())
+        prompt += f"\n\nFakty zapamiętane przez Ciebie z poprzednich rozmów (Twoje wnioski, nie słowa użytkownika):\n{facts_block}"
+    return prompt
 
 
 def _make_remember_tool(agent_name: str):
@@ -260,7 +271,14 @@ def build_orchestrator():
     specjalista (albo deterministyczne potwierdzenie zapisu - patrz
     `_format_confirmation` w tools/manual.py). `str` zostaje jako trzecia
     opcja dla czystego small talk bez delegacji/zapisu."""
-    return build_agent("orchestrator", ORCHESTRATOR_PROMPT, [], output_type=[str, _delegate, log_manual_entry])
+    # set_user_profile_facts to ZWYKŁE narzędzie (tool_plain), nie output
+    # function: złapane na żywo, że przy dwóch wywołaniach output function w
+    # jednej turze ("mam refluks i cel 84 kg") pydantic-ai wykonuje tylko
+    # pierwsze - drugi fakt przepadał. Zwykłe narzędzie można wołać dowolnie
+    # i łączyć z wpisem pomiaru w tej samej wiadomości; kosztuje jedną
+    # dodatkową, tanią rundę Haiku na potwierdzenie - profil zmienia się rzadko.
+    agent = build_agent("orchestrator", ORCHESTRATOR_PROMPT, [get_user_profile, set_user_profile_facts], output_type=[str, _delegate, log_manual_entry])
+    return agent
 
 
 def _with_history(question: str, history: list[tuple[str, str]] | None) -> str:

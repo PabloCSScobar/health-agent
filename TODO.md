@@ -7,18 +7,14 @@ Historia decyzji i znalezisk technicznych: `scripts/README.md`.
 
 ## Rekomendowane jako następne (duża wartość, mały koszt)
 
-- [ ] **Cele i profil użytkownika** - tabela `goals` (kalorie, białko, waga
-  docelowa, km/tydzień) + narzędzie `get_goals`; każdy specjalista porównuje
-  z celem zamiast tylko raportować liczby. Warunek dla nudge'y (niżej) i
-  fundament pod pełny profil (sekcja "Profil użytkownika").
-- [ ] **Szacunek całodniowego wydatku kalorycznego** - żadne źródło tego nie
-  daje (potwierdzone: Intervals.icu, Health Connect, Health Sync). Policzyć:
-  BMR (Mifflin-St Jeor z wagi z Fitdays + wzrost/wiek z profilu) + kalorie z
-  treningów (są) + składowa z kroków (są). Zawsze oznaczać jako szacunek.
-  Zamyka najczęstsze pytanie ("jaki deficyt?") bez ręcznego "spaliłem X".
-- [~] **Miara jakości w `scripts/eval_agents.py`** - sędzia LLM (Haiku, 5
-  kryteriów kontraktu odpowiedzi) jest dla RunningCoach; do zrobienia dla
-  pozostałych agentów przy ich "trenowaniu". Sędzia NIE weryfikuje
+- [x] **Cele i profil użytkownika** - `tools/profile.py` (agent_memory pod
+  `user_profile`, wstrzykiwany do każdego specjalisty, `set_user_profile_facts`
+  w orchestratorze). Użytkownik musi PODAĆ wartości na Telegramie ("mam 34
+  lata, 182 cm, cel 84 kg") - dziś profil jest pusty.
+- [x] **Szacunek całodniowego wydatku** - `tools/energy.py` + `get_energy_balance`
+  w nutrition. Wymaga wzrostu/wieku/płci w profilu.
+- [x] **Miara jakości w `scripts/eval_agents.py`** - sędzia LLM (Haiku, 5
+  kryteriów kontraktu) dla wszystkich pięciu specjalistów. Sędzia NIE weryfikuje
   poprawności liczb (nie widzi wyników narzędzi) - gdyby to było potrzebne:
   zapisywać wyniki narzędzi w `agent_runs` i dawać je sędziemu.
 - [ ] **`/sync` na Telegramie + narzędzie "odśwież dzisiejsze jedzenie"** -
@@ -40,18 +36,13 @@ i wnioski: `scripts/README.md` (wpis 2026-09-17). Ten sam wzorzec powtórzyć
 dla reszty, jeden agent naraz:
 - [x] **RunningCoach** - `tools/running.py` (7 narzędzi), `prompts/running.md`,
   `eval_agents.py running` (7 testów + sędzia).
-- [ ] **RecoveryAnalyst** - baseline HRV/RHR 7/28 dni z z-score, dług snu 7 dni,
-  prosty readiness score; prompt: interpretuj względem bazy, nigdy wartości
-  bezwzględne; rekomenduj dzień lekki/mocny. Dziś przy pytaniu o kilka dni
-  woła get_recovery_day 3x - narzędzie `get_recovery_baseline(days)` załatwi
-  to jednym wywołaniem.
-- [ ] **NutritionCoach** - średnie 7-dniowe vs cel, białko g/kg z ostatniej wagi,
-  rozkład dni (weekendy), 'co jadłem bogatego w X'; prompt: matematyka celów,
-  timing wokół treningu (pyta running o godzinę), ograniczenia z profilu.
-  Wymaga celów (`goals`).
-- [ ] **BodyCompCoach** - średnia krocząca 7 dni, nachylenie kg/tydz., porównanie
-  z oczekiwanym z deficytu (pyta nutrition); prompt: nie reaguj na pojedynczy
-  odczyt (BIA = szum).
+- [x] **RecoveryAnalyst** - `get_recovery_baseline`, `prompts/recovery.md`.
+- [x] **NutritionCoach** - `get_nutrition_summary`/`get_energy_balance`/`find_foods`,
+  `prompts/nutrition.md`.
+- [x] **BodyCompCoach** - `get_body_trend`, `prompts/body.md`.
+- [ ] Ograniczenie pydantic-ai: dwie output functions w jednej turze -> tylko
+  pierwsza się wykonuje (np. 'waga 87 i spaliłem 2600' zapisze jedno).
+  Jeśli będzie przeszkadzać: `log_manual_entries(list)` jak przy profilu.
 - [ ] **Pętla zwrotna z produkcji**: 👍/👎 pod odpowiedzią na Telegramie
   (MessageReactionHandler w python-telegram-bot) zapisane przy `agent_runs`
   (wymaga `message_id` w `conversations` - migracja). Bez tego każda zmiana
@@ -63,10 +54,9 @@ dla reszty, jeden agent naraz:
   Akceptowalne dla 'analizy', za długie dla 'szybkiego pytania' - rozważyć
   streaming statusu na Telegram ('sprawdzam regenerację...') zamiast samego
   'pisze...'.
-- [ ] **StrengthCoach z prawdziwym schematem** - dziś najsłabszy agent (luźny
-  JSON + jedno narzędzie `get_recent_manual_logs`). Ustrukturyzowany zapis
-  (ćwiczenie, serie, powtórzenia, ciężar) → progresja per ćwiczenie,
-  szacowany 1RM, objętość per partia, rekordy.
+- [x] **StrengthCoach** - `tools/strength.py` (schemat, parser, e1RM, objętość,
+  PR, grupy mięśniowe), `prompts/strength.md`. Do przetestowania dopiero po
+  kilku prawdziwych wpisach.
 - [ ] **Analiza korelacji → `agent_memory`** - mechanizm pamięci istnieje,
   prawie nieużywany. Cotygodniowy job: recovery/running szukają wzorców
   ("HRV spada po dwóch mocnych biegach", "gorszy sen po treningu po 20:00")
@@ -143,6 +133,15 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 
 ## Niezawodność i dostęp
 
+- [ ] **PILNE: autostart procesów po restarcie WSL.** 2026-09-17: po restarcie
+  WSL/Dockera baza wstała sama (`restart: unless-stopped`), ale uvicorn
+  (webhook + scheduler: polling, alerty, backup) i bot Telegram to procesy
+  odpalane ręcznie przez `nohup` - zniknęły, webhooki z telefonu nie
+  działały, aż użytkownik zauważył. Alert o martwym źródle też nie przyszedł,
+  bo żyje w tym samym procesie. Opcje: (a) oba jako usługi w
+  `docker-compose.yml` z `restart: unless-stopped` (najspójniej z Fazą 6),
+  (b) systemd --user + `loginctl enable-linger`, (c) Task Scheduler w
+  Windows odpalający `wsl -d ... -- uv run ...` przy logowaniu.
 - [ ] **Przenosiny na VPS/RPi (Faza 6) - ważniejsze niż się wydaje.**
   Webhook, polling, alerty i backup żyją w JEDNYM procesie na PC
   (`uvicorn`). Health Connect Webhook ma lookback 48h → PC wyłączony na
