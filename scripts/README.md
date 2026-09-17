@@ -431,3 +431,65 @@ przestaną się odpalać, warto o tym pamiętać przy Fazie 6).
   domyślnymi wartościami - `.env.example` udokumentowany.
 - Poranny/wieczorny raport (reszta Fazy 5) świadomie pominięty na razie
   na prośbę użytkownika.
+
+**RunningCoach - pilot "wytrenowania" specjalisty (2026-09-17, Faza 5b).**
+Metoda (uzgodniona z użytkownikiem): nie fine-tuning (niemożliwy i bez
+danych), tylko 4 dźwignie w kolejności wpływu: (1) narzędzia liczące w
+Pythonie to, co trener policzyłby sam, (2) metodologia domenowa w prompcie,
+(3) kontrakt na kształt odpowiedzi + przykłady, (4) miara jakości w evalu.
+Sprawdzone najpierw, CO naprawdę mamy w `workouts.raw_json` z Intervals.icu
+(183 pola): `icu_hr_zones` (7 progów Friela z LTHR=172, max 190),
+`icu_hr_zone_times`, `icu_training_load` (HRSS), `icu_ctl`/`icu_atl`,
+`trainer`, `feel`, `interval_summary`, `average_temp`; w `recovery.raw_json`
+z /wellness: `ctl`, `atl`, `rampRate` dziennie. `decoupling` jest PUSTE we
+wszystkich treningach - dryf tętna trzeba liczyć samemu; endpoint
+`/activity/{id}/streams` działa (6001 punktów dla 15-km biegu) i to robimy
+na żądanie w `analyze_run` (jedno wywołanie API, nie trzymamy strumieni).
+Odkrycie z danych: "VirtualRun" z bieżni to MARSZE (14-15 min/km, HR ~80) -
+wliczone do średnich rozwalały każdą analizę; stąd `_is_walk` i osobne
+liczenie marszów we wszystkich narzędziach. Biegi <3 km pomijane w EF i
+klasyfikacji sesji.
+Narzędzia (`tools/running.py`): `get_running_profile` (strefy, baza 4 tyg.,
+forma dziś), `get_weekly_running_load` (+ACWR bieg/wszystkie sporty),
+`get_intensity_distribution` (czas w strefach + sesje, 80/20),
+`get_efficiency_trend` (EF), `get_fitness_form` (CTL/ATL/TSB), `analyze_run`
+(dryf Pa:Hr, splity 1 km, strefy, forma w dniu; domyślnie ostatni bieg),
+`find_comparable_runs` (±15% dystansu). Progi Form zweryfikowane w źródłach
+(Friel: optimal -30..-10, grey -10..+5, fresh +5..+25; Intervals.icu
+domyślnie pokazuje Form % z tymi samymi liczbami) - i ważna pułapka: przy
+CTL<30 Form % eksploduje (TSB -8 = -44% = "czerwono" w apce), więc narzędzie
+zwraca oba pasma i mówi, którego użyć.
+Prompt: `prompts/running.md` (plik, nie string) - rzeczywistość danych,
+kolejność pracy, metodologia (strefy, 80/20, CTL/ATL/TSB, ramp/ACWR,
+progresja, dryf, EF, sygnały ostrzegawcze, plan/personalizacja, taper,
+zdrowie), kontrakt: liczby -> interpretacja względem bazy -> JEDNA
+rekomendacja -> pewność; 2 przykłady z FIKCYJNYMI liczbami (pierwsza wersja
+miała prawdziwe - ryzyko cytowania).
+Efekt na tym samym pytaniu ("jak wyszedł ostatni długi bieg, czy dobrze
+rozłożyłem siły"): przed - "11,3 km, 6:28, tętno 136, chcesz szczegóły?";
+po - dryf 11,1% (6:20@132 -> 6:38@142), sam skonsultował recovery (HRV
+69->60, gorszy sen), EF vs porównywalne biegi, jedna rekomendacja, pewność.
+Koszt takiego pytania: $0.084 -> $0.054 po: domyślnym "ostatni bieg" w
+analyze_run/find_comparable_runs (jedna runda mniej), instrukcji o
+RÓWNOLEGŁYM wołaniu narzędzi, i `anthropic_cache=True` (auto-cache
+przesuwany na ostatni blok - kolejne rundy narzędzi czytają poprzednie
+wyniki z cache; 45,9k tokenów wejścia za $0.043 vs 32,5k za $0.056 bez).
+Proste pytania biegowe: $0.014-0.022; plan na tydzień: ~$0.06, ~60 s.
+Obserwowalność: `agent_runs.tools_called` (migracja e0e4e7f51ec3) -
+nazwy narzędzi per bieg agenta; eval sprawdza "running UŻYŁ analyze_run",
+nie tylko "running został wywołany".
+Eval: `scripts/eval_agents.py running` - inwarianty narzędzi (bez LLM) +
+6 pytań z asercjami na narzędzia/konsultacje + sędzia LLM (Haiku, 5
+kryteriów kontraktu, próg 4/5; NIE ocenia poprawności liczb - tego pilnują
+testy narzędzi i zasada "tylko z narzędzi"). Złapane przez eval: (a)
+orchestrator kierował "czy mogę jutro zrobić interwały" do recovery
+(brzmi jak regeneracja) - recovery nie ułoży treningu; naprawione w
+promptcie orchestratora (decyzje/plan treningowy -> running, który sam
+dopyta recovery); (b) running raz odpowiedział "nie mam danych o śnie/HRV"
+zamiast zapytać - reguła konsultacji recovery przy pytaniach o gotowość
+zmieniona na OBOWIĄZKOWĄ; (c) recovery zapisał `remember_fact` z JEDNEJ
+obserwacji ("niska HRV koreluje z gorszą ekonomią") - usunięte, docstring
+remember_fact zaostrzony (fakt od użytkownika albo wzorzec >=3 obserwacje).
+Nie zrobione (świadomie, do TODO): 👍/👎 na Telegramie jako pętla zwrotna z
+produkcji; running na Haiku (test 3x jak przy recovery/nutrition, ale
+dopiero teraz jest sędzia, który by to uczciwie ocenił).

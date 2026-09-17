@@ -125,9 +125,14 @@ def build_agent(agent_name: str, system_prompt: str, tools: list[Callable] | Non
         # włączeniu, żeby to zweryfikować, nie zakładać).
         from pydantic_ai.models.anthropic import AnthropicModelSettings
 
+        # `anthropic_cache=True` dodatkowo przesuwa automatyczny punkt cache na
+        # ostatni blok wiadomości: w agentach z kilkoma rundami narzędzi
+        # (running: profil -> analiza -> ask_agent -> odpowiedź) każda kolejna
+        # runda czyta wyniki poprzednich z cache zamiast płacić pełną cenę.
         model_settings = AnthropicModelSettings(
             anthropic_cache_instructions=True,
             anthropic_cache_tool_definitions=True,
+            anthropic_cache=True,
         )
 
     agent = Agent(model, system_prompt=system_prompt, output_type=output_type, model_settings=model_settings)
@@ -169,12 +174,19 @@ async def run_agent(agent: Agent, agent_name: str, prompt: str) -> Any:
         _current_run_id.reset(token)
 
     usage = result.usage
+    tools_called = [
+        part.tool_name
+        for message in result.all_messages()
+        for part in getattr(message, "parts", [])
+        if type(part).__name__ == "ToolCallPart"
+    ]
     with get_session() as session:
         row = session.get(AgentRun, run_id)
         row.input_tokens = usage.input_tokens
         row.output_tokens = usage.output_tokens
         row.cost_usd = float(usage.cost) if usage.cost is not None else None
         row.duration_ms = duration_ms
+        row.tools_called = tools_called
 
     return result.output
 

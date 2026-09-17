@@ -196,3 +196,6 @@ class AgentRun(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     parent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    # Nazwy narzędzi wywołanych w tym biegu, w kolejności (bez argumentów) -
+    # do eval_agents.py ("czy running użył analyze_run?") i debugowania.
+    tools_called: Mapped[list | None] = mapped_column(JSON)

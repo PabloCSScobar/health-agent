@@ -8,6 +8,8 @@ dostaje - więc fizycznie nie da się zejść głębiej niż jeden poziom.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel
 
 from health_agent.agents.base import build_agent, run_agent, run_agent_sync
@@ -16,7 +18,25 @@ from health_agent.tools.manual import get_recent_manual_logs, log_manual_entry
 from health_agent.tools.memory import recall_all, remember
 from health_agent.tools.nutrition import get_nutrition_day, get_nutrition_range
 from health_agent.tools.recovery import get_recovery_day, get_recovery_range
-from health_agent.tools.workouts import get_latest_workout, get_workout_detail, get_workouts, get_workouts_on_date
+from health_agent.tools.running import (
+    analyze_run,
+    find_comparable_runs,
+    get_efficiency_trend,
+    get_fitness_form,
+    get_intensity_distribution,
+    get_running_profile,
+    get_weekly_running_load,
+)
+from health_agent.tools.workouts import get_latest_workout, get_workouts, get_workouts_on_date
+
+_PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    """Metodologia specjalisty jako plik .md, nie ciąg w Pythonie - łatwiej
+    czytać, edytować i porównywać w diffie; cały plik idzie do system
+    promptu (statyczny -> prompt cache)."""
+    return (_PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
 
 
 class AgentAnswer(BaseModel):
@@ -53,21 +73,23 @@ _PROMPT_SUFFIX = (
 
 SPECIALISTS: dict[str, tuple[str, list]] = {
     "running": (
-        "Jesteś trenerem biegowym (RunningCoach). Analizujesz treningi biegowe: "
-        "tempo, tętno, dystans, trendy w czasie, kalorie spalone NA TRENINGU. "
-        "WAŻNE: nie masz dostępu do CAŁODNIOWEGO wydatku kalorycznego (BMR + "
-        "cała aktywność) - masz tylko kalorie z konkretnych treningów. "
-        "Całodniowy wydatek (jeśli w ogóle dostępny) sprawdza 'recovery', "
-        "nie Ty. Jeśli użytkownik pyta ogólnie 'ile spaliłem kalorii "
-        "dzisiaj/wczoraj' (nie konkretnie na treningu), zasugeruj zapytanie "
-        "o dane z 'recovery' zamiast podawać kalorie z treningu jako "
-        "odpowiedź na pytanie o cały dzień. Do "
-        "pytań o 'ostatni trening' bez konkretnej daty używaj "
-        "get_latest_workout. Do pytań o konkretny dzień ('wczoraj', 'w "
-        "poniedziałek', '15 września') przelicz to na datę (masz dzisiejszą "
-        "datę wyżej) i użyj get_workouts_on_date - NIGDY nie zgaduj liczby "
-        "dni wstecz w get_workouts, to zawodne." + _PROMPT_SUFFIX,
-        [get_latest_workout, get_workouts_on_date, get_workouts, get_workout_detail],
+        _load_prompt("running")
+        + "\n\nKalorie: masz tylko kalorie spalone NA TRENINGU. Całodniowy wydatek "
+        "(BMR + cała aktywność) ma 'recovery' - przy pytaniu 'ile spaliłem "
+        "dzisiaj/wczoraj' (nie na konkretnym treningu) odeślij tam."
+        + _PROMPT_SUFFIX,
+        [
+            get_running_profile,
+            get_weekly_running_load,
+            get_intensity_distribution,
+            get_efficiency_trend,
+            get_fitness_form,
+            analyze_run,
+            find_comparable_runs,
+            get_latest_workout,
+            get_workouts_on_date,
+            get_workouts,
+        ],
     ),
     "strength": (
         "Jesteś trenerem siłowym (StrengthCoach). Analizujesz treningi siłowe "
@@ -133,7 +155,11 @@ ORCHESTRATOR_PROMPT = (
     "(biegi, rowery, inne sporty cardio) - to domyślny wybór dla ogólnego "
     "słowa 'trening' bez dodatkowego kontekstu. Tu też idą pytania o "
     "kalorie SPALONE/wydatkowane na treningu (nie mylić z nutrition, które "
-    "ma tylko kalorie ZJEDZONE).\n"
+    "ma tylko kalorie ZJEDZONE). ORAZ każda DECYZJA/PLAN treningowy: 'czy "
+    "mogę jutro zrobić interwały/długi bieg', 'co mam dziś pobiec', 'ułóż "
+    "plan', 'czy jestem gotowy na mocny trening' - to running (ma formę "
+    "CTL/ATL/TSB, obciążenie, strefy) i SAM dopyta recovery o sen/HRV; "
+    "recovery bez kontekstu treningowego nie ułoży treningu.\n"
     "- strength: TYLKO treningi siłowe/na siłowni wpisane RĘCZNIE przez "
     "użytkownika w tym czacie - używaj tylko gdy pytanie wprost wspomina "
     "siłownię, ciężary, serie/powtórzenia.\n"
@@ -176,10 +202,13 @@ def _prompt_with_memory(agent_name: str, base_prompt: str) -> str:
 
 def _make_remember_tool(agent_name: str):
     def remember_fact(key: str, value: str) -> str:
-        """Zapamiętaj trwały fakt na przyszłość (np. 'wzorzec: gorsze biegi po <6h snu').
+        """Zapamiętaj trwały fakt o użytkowniku na przyszłość.
 
-        Używaj oszczędnie - tylko dla wniosków wartych zapamiętania na stałe,
-        nie dla bieżących liczb z tej rozmowy."""
+        TYLKO: (a) fakt podany wprost przez użytkownika (cel, kontuzja,
+        preferencja) albo (b) wzorzec potwierdzony w >=3 niezależnych
+        obserwacjach (np. '3 z 3 biegów po <6h snu miały dryf >10%').
+        NIGDY: korelacja z jednego treningu/dnia, bieżące liczby, ogólna
+        wiedza trenerska. Jedna obserwacja to anegdota, nie fakt."""
         remember(agent_name, key, value)
         return "zapamiętane"
 
