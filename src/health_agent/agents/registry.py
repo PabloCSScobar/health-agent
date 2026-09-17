@@ -24,7 +24,13 @@ from health_agent.tools.nutrition import (
     get_nutrition_range,
     get_nutrition_summary,
 )
-from health_agent.tools.profile import get_user_profile, profile_prompt_block, set_user_profile_facts
+from health_agent.tools.profile import (
+    get_user_profile,
+    missing_onboarding_keys,
+    onboarding_message,
+    profile_prompt_block,
+    set_user_profile_facts,
+)
 from health_agent.tools.recovery import get_recovery_baseline, get_recovery_day, get_recovery_range
 from health_agent.tools.running import (
     analyze_run,
@@ -77,6 +83,14 @@ _PROMPT_SUFFIX = (
     "zapytać X' i NIE opisuj słownie że 'powinieneś wywołać ask_agent' - to "
     "błąd, wywołaj je naprawdę, tak samo jak każde inne narzędzie. Dopiero "
     "gdy `ask_agent` też nie da odpowiedzi, powiedz wprost czego brakuje.\n"
+    "5. Jeśli w PROFILU brakuje faktu, który ZMIENIŁBY Twoją rekomendację "
+    "(kontuzja przy planie, cel/data startu przy periodyzacji, problem "
+    "zdrowotny przy diecie, docelowa waga przy deficycie, wzrost/wiek/płeć "
+    "gdy narzędzie zwraca `missing`) - zadaj DOKŁADNIE JEDNO krótkie pytanie "
+    "na samym końcu odpowiedzi, w osobnej linii zaczynającej się od '❓'. "
+    "Nigdy o coś, co już jest w profilu; nigdy więcej niż jedno; nie przy "
+    "krótkich odpowiedziach na pytanie o fakt. Odpowiedź użytkownika trafi "
+    "do profilu automatycznie.\n"
     "Odpowiadaj po polsku, zwięźle."
 )
 
@@ -151,7 +165,18 @@ ORCHESTRATOR_PROMPT = (
     "żywieniowe, suplementy -> `set_user_profile_facts({klucz: wartość, ...})` "
     "- WSZYSTKIE fakty z wiadomości w JEDNYM wywołaniu (klucze w opisie "
     "narzędzia), potem jedno zdanie potwierdzenia. "
-    "'Ważę 87' to pomiar (ZASADA 2), 'chcę ważyć 84' to cel (ZASADA 3).\n\n"
+    "'Ważę 87' to pomiar (ZASADA 2), 'chcę ważyć 84' to cel (ZASADA 3). "
+    "Jeśli w poprzedniej turze (kontekst rozmowy) specjalista zadał pytanie "
+    "zaczynające się od '❓' albo Ty wysłałeś wywiad z listą pytań o profil, "
+    "to obecna wiadomość użytkownika jest ODPOWIEDZIĄ - zapisz WSZYSTKIE "
+    "fakty z niej ('brak'/'bez celu' też zapisuj, jako 'brak'), potem jedno "
+    "zdanie potwierdzenia.\n\n"
+    "ZASADA 4 (wywiad): gdy PROFIL jest niekompletny (status niżej) i "
+    "użytkownik zaczyna rozmowę small talkiem ('cześć', 'hej', 'co tam') "
+    "albo pyta, co potrafisz - odpowiedz krótko i dołącz DOKŁADNIE treść "
+    "z sekcji WYWIAD niżej (bez zmian). Nie dołączaj wywiadu do odpowiedzi "
+    "na pytania o dane ani do potwierdzeń wpisów - specjaliści sami dopytają "
+    "o to, co im potrzebne, jednym pytaniem na raz.\n\n"
     "Przykład pytania:\n"
     "user: Ile miałem wczoraj kroków?\n"
     "-> wywołaj delegate(agent_name='recovery', question='ile kroków wczoraj?')\n"
@@ -260,6 +285,16 @@ async def _delegate(agent_name: str, question: str) -> str:
     return await run_agent(full, agent_name, question)
 
 
+def _orchestrator_prompt() -> str:
+    missing = missing_onboarding_keys()
+    status = "kompletny" if not missing else "niekompletny - brakuje: " + ", ".join(missing)
+    prompt = ORCHESTRATOR_PROMPT + f"\n\nPROFIL UŻYTKOWNIKA: {status}."
+    onboarding = onboarding_message()
+    if onboarding:
+        prompt += "\n\nWYWIAD (dołącz tylko wg ZASADY 4, dokładnie w tej formie):\n" + onboarding
+    return prompt
+
+
 def build_orchestrator():
     """`_delegate`/`log_manual_entry` są zarejestrowane jako OUTPUT FUNCTIONS
     (przez `output_type`), nie zwykłe narzędzia (`tool_plain`). Różnica:
@@ -277,7 +312,7 @@ def build_orchestrator():
     # pierwsze - drugi fakt przepadał. Zwykłe narzędzie można wołać dowolnie
     # i łączyć z wpisem pomiaru w tej samej wiadomości; kosztuje jedną
     # dodatkową, tanią rundę Haiku na potwierdzenie - profil zmienia się rzadko.
-    agent = build_agent("orchestrator", ORCHESTRATOR_PROMPT, [get_user_profile, set_user_profile_facts], output_type=[str, _delegate, log_manual_entry])
+    agent = build_agent("orchestrator", _orchestrator_prompt(), [get_user_profile, set_user_profile_facts], output_type=[str, _delegate, log_manual_entry])
     return agent
 
 

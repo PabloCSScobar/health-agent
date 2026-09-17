@@ -67,8 +67,8 @@ def profile_prompt_block() -> str:
     if not facts:
         return (
             "\n\nPROFIL UŻYTKOWNIKA: pusty - nie znasz jego wzrostu, wieku, celów ani "
-            "ograniczeń zdrowotnych. Gdy to ważne dla odpowiedzi, powiedz jednym "
-            "zdaniem, co warto podać (np. 'podaj wzrost i wiek, policzę BMR')."
+            "ograniczeń zdrowotnych. Patrz zasada 5: jedno pytanie '❓' na końcu, "
+            "gdy brak zmienia rekomendację."
         )
     lines = "\n".join(f"- {k}: {v}" for k, v in sorted(facts.items()))
     return f"\n\nPROFIL UŻYTKOWNIKA (fakty podane przez niego - uwzględniaj ZAWSZE):\n{lines}"
@@ -82,3 +82,39 @@ def _profile_number(key: str) -> float | None:
         return float(str(v).replace(",", ".").split()[0])
     except (ValueError, IndexError):
         return None
+
+
+# Fakty, o które warto zapytać z góry (wywiad) - wynikają z tego, czego
+# używają narzędzia: BMR (wzrost/wiek/płeć), cele (body/nutrition/running),
+# ograniczenia (plany treningowe, dieta). Reszta kluczy (suplementy, staż,
+# inne) zbiera się w rozmowie.
+ONBOARDING_QUESTIONS: dict[str, str] = {
+    "wzrost_cm": "wzrost (cm)",
+    "wiek": "wiek",
+    "plec": "płeć (M/K)",
+    "cel_waga_kg": "docelowa waga (kg) - albo 'bez celu'",
+    "cel_biegowy": "cel biegowy - np. 'półmaraton 15.03.2027 poniżej 2h' albo 'budowa bazy, bez startów'",
+    "kontuzje": "kontuzje aktualne/przebyte - albo 'brak'",
+    "problemy_zdrowotne": "problemy zdrowotne istotne dla treningu/diety (np. refluks, nadciśnienie, alergie) - albo 'brak'",
+    "preferencje_zywieniowe": "preferencje/wykluczenia żywieniowe - albo 'brak'",
+}
+
+
+def missing_onboarding_keys() -> list[str]:
+    have = get_user_profile()
+    return [k for k in ONBOARDING_QUESTIONS if k not in have]
+
+
+def onboarding_message() -> str | None:
+    """Jedna wiadomość z pytaniami o brakujące fakty profilu (None = komplet).
+    Użytkownik odpowiada swobodnie jedną wiadomością - orchestrator parsuje
+    odpowiedź do set_user_profile_facts (ZASADA 3 w jego prompcie)."""
+    missing = missing_onboarding_keys()
+    if not missing:
+        return None
+    lines = [f"{i}. {ONBOARDING_QUESTIONS[k]}" for i, k in enumerate(missing, 1)]
+    return (
+        "Żeby analizy były o Tobie, a nie ogólne, brakuje mi kilku rzeczy. "
+        "Odpowiedz jedną wiadomością, dowolnie (np. \"182 cm, 34 lata, M, cel 84 kg, ...\"):\n"
+        + "\n".join(lines)
+    )

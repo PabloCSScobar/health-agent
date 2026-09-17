@@ -116,6 +116,28 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _reply(update.message, "\n".join(lines))
 
 
+async def cmd_profil(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Podgląd profilu + wywiad o brakujące fakty (bez LLM). Odpowiedź
+    użytkownika na wywiad idzie zwykłą wiadomością - orchestrator ją parsuje
+    (ZASADA 3), bo wywiad ląduje w historii rozmowy jako tura asystenta."""
+    if not _is_authorized(update):
+        return
+    from health_agent.tools.profile import PROFILE_KEYS, get_user_profile, onboarding_message
+
+    facts = get_user_profile()
+    lines = ["**Profil:**"] + ([f"- {k}: {v}" for k, v in sorted(facts.items())] or ["- (pusty)"])
+    lines.append("\nZmiana: napisz zwykłą wiadomością, np. \"cel biegowy: półmaraton w marcu\" albo \"kontuzje: brak\".")
+    lines.append("Klucze: " + ", ".join(PROFILE_KEYS))
+    text = "\n".join(lines)
+    onboarding = onboarding_message()
+    if onboarding:
+        text += "\n\n" + onboarding
+        chat_id = str(update.effective_chat.id)
+        with get_session() as session:
+            session.add(Conversation(chat_id=chat_id, role="assistant", content=onboarding, agent="profil"))
+    await _reply(update.message, text)
+
+
 async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update):
         return
@@ -135,6 +157,7 @@ def build_bot():
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("cost", cmd_cost))
+    app.add_handler(CommandHandler("profil", cmd_profil))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     return app
 

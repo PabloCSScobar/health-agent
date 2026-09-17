@@ -554,3 +554,23 @@ użytkownika (testy na realnych danych zrobi sam później).
   intake - wydatek, end_date, HC-partial, body <3 punktów, parser 4
   wariantów, profil roundtrip) + 11 pytań + sędzia (dla pytań o FAKT próg
   2/5, bo krótka odpowiedź bez rekomendacji jest tam poprawna).
+
+**Wywiad i dopytywanie o profil (2026-09-17).** Pytanie użytkownika: "czy
+muszę sam uzupełniać profil, skąd mam wiedzieć co jest wartościowe?" -
+słuszne; lista wartościowych faktów wynika z tego, czego używają narzędzia,
+więc to system ma pytać. Trzy mechanizmy: (1) `/profil` na Telegramie
+(podgląd + wywiad o brakujące klucze, bez LLM; wywiad ląduje w historii
+jako tura asystenta, więc odpowiedź parsuje orchestrator) oraz wywiad
+automatycznie przy small talku ("cześć") gdy profil niekompletny (ZASADA
+4 orchestratora; prompt orchestratora jest teraz budowany dynamicznie -
+`_orchestrator_prompt()` - ze statusem profilu i treścią wywiadu); (2)
+reguła 5 w `_PROMPT_SUFFIX` każdego specjalisty: jeśli brak faktu z
+profilu ZMIENIŁBY rekomendację - dokładnie jedno pytanie '❓' na końcu,
+nigdy o coś, co już jest, nigdy przy pytaniach o fakt; orchestrator
+(ZASADA 3) rozpoznaje odpowiedź na '❓'/wywiad z kontekstu rozmowy i
+zapisuje do profilu; (3) tygodniowe przypomnienie o brakach - świadomie
+NIE zrobione (użytkownik wybrał 1+2). Test end-to-end: "cześć" -> wywiad
+-> swobodna odpowiedź jedną wiadomością -> 8 faktów w profilu -> plan
+biegowy uwzględnia cel z profilu i kończy się jednym '❓' (liczba dni w
+tygodniu). Core 13/13 po zmianie promptu orchestratora. Profil testowy
+usunięty - użytkownik startuje od "cześć" albo `/profil`.
