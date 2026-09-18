@@ -1,6 +1,6 @@
 # TODO / pomysły na rozwój
 
-Stan na 2026-09-17. Fazy 0-3 z planu zakończone (MVP działa: ingestia, agenci,
+Stan na 2026-09-18. Plan implementacji otwartych punktów: `PLAN.md`. Fazy 0-3 z planu zakończone (MVP działa: ingestia, agenci,
 Telegram, alerty, backup). Poniżej wszystko, co jeszcze nie jest zrobione -
 z planu i z burzy mózgów. Kolejność w sekcjach = sugerowany priorytet.
 Historia decyzji i znalezisk technicznych: `scripts/README.md`.
@@ -65,14 +65,14 @@ dla reszty, jeden agent naraz:
   dacie X) + tygodniowy plan (Intervals.icu ma API na zaplanowane treningi)
   → "jesteś 12 km za planem, ale HRV mówi, że słusznie odpuściłeś".
 
-## Profil użytkownika (pomysł użytkownika, zweryfikowany - ma sens)
+## Profil użytkownika - ZROBIONE 2026-09-17 (tools/profile.py, /profil, wywiad, dopytywanie ❓)
 
-- [ ] **Tabela `user_profile`** (sekcje tekstowe: staż treningowy, kontuzje,
+- [x] **Tabela `user_profile`** (zrealizowane jako `agent_memory` pod `user_profile`, nie osobna tabela) (sekcje tekstowe: staż treningowy, kontuzje,
   problemy zdrowotne np. refluks, preferencje/alergie żywieniowe,
   doświadczenia, cele) wstrzykiwana do system promptu KAŻDEGO specjalisty -
   tak jak dziś fakty z `agent_memory`. Rozdzielić: profil = fakty podane
   przez użytkownika; `agent_memory` = wnioski wyciągnięte przez agentów.
-- [ ] **Profilowanie w trakcie rozmowy** - narzędzie `update_profile(sekcja,
+- [x] **Profilowanie w trakcie rozmowy** - narzędzie `update_profile(sekcja,
   tekst)` dla orchestratora: gdy użytkownik mówi "mam refluks" / "biegam od
   3 lat", zapis bez osobnego trybu. Plus opcjonalny `/profil` (podgląd +
   edycja) i krótki onboarding ("zadam Ci kilka pytań") na start.
@@ -135,6 +135,31 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 
 - [x] Backfill luki w Intervals.icu po dłuższym przestoju - `ingest_state`
   + okno liczone od ostatniego syncu (2026-09-18, scripts/README.md).
+- [ ] **Suunto → Intervals.icu nie zawsze synchronizuje się automatycznie.**
+  2026-09-18: HRV/tętno spoczynkowe/sen dla 17-18.09 brakowało - potwierdzone,
+  że to NIE nasz błąd (Intervals.icu zwracało `hrv: null` już we własnym
+  API, nasz polling działał poprawnie). Dane pojawiły się dopiero po (a)
+  ręcznym otwarciu apki Suunto na telefonie (wymusiło sync zegarek->telefon
+  ->Suunto Cloud) i (b) ręcznym "pobierz stare dane" w Intervals.icu. Czyli
+  ogniwo Suunto Cloud -> Intervals.icu w tej konfiguracji NIE jest w pełni
+  automatyczne/push - albo jest, ale zawodzi bez wyraźnej przyczyny; nie da
+  się tego zdiagnozować ani naprawić z naszej strony (poza naszym systemem).
+  Do zrobienia (nie teraz, odłożone przez użytkownika):
+  1. Sprawdzić w ustawieniach konta Intervals.icu, czy jest opcja
+     częstotliwości/trybu synchronizacji z Suunto.
+  2. Sprawdzić ustawienia telefonu (oszczędzanie baterii może ubijać apkę
+     Suunto w tle, więc watch->phone też nie synchronizuje się samo).
+  3. **Poszukać alternatywy dla Intervals.icu jako źródła wellness
+     (HRV/sen/RHR)** jeśli problem się powtórzy - np. bezpośrednie API
+     Suunto (apizone.suunto.com, patrz Faza 4 w planie - odrzucone
+     wcześniej głównie dlatego, że Intervals.icu "po prostu działało";
+     ten incydent podważa to założenie), Health Sync (już sprawdzone
+     wcześniej, że nie eksportuje HRV/snu do Health Connect - do
+     re-weryfikacji, mogło się zmienić), albo inna platforma z integracją
+     Suunto (Garmin Connect nie dotyczy, to inny ekosystem).
+  4. Do czasu decyzji: alert o martwym źródle (już działa, próg 48h) jest
+     jedyną siatką bezpieczeństwa - żadna dodatkowa praca nie jest pilna,
+     dopóki się nie powtórzy.
 - [ ] **PILNE: autostart procesów po restarcie WSL.** 2026-09-17: po restarcie
   WSL/Dockera baza wstała sama (`restart: unless-stopped`), ale uvicorn
   (webhook + scheduler: polling, alerty, backup) i bot Telegram to procesy
