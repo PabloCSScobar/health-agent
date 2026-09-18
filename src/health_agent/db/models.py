@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -162,7 +162,59 @@ class ManualLog(Base):
     text_original: Mapped[str | None] = mapped_column(String)
 
 
+class Document(Base):
+    """Zaimportowany dokument (streszczenie rozmowy, notatka) - ORYGINAŁ w
+    całości. Fakty wyciągnięte z niego lądują w `knowledge` ze wskazaniem na
+    ten wiersz; gdy ekstrakcja coś pominie, agent może wrócić do źródła
+    przez read_document. `sha256` chroni przed podwójnym importem."""
+
+    __tablename__ = "documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(256))
+    source: Mapped[str] = mapped_column(String(32))  # cli | telegram_file | telegram_text
+    doc_date: Mapped[dt.date | None] = mapped_column(Date)  # data, której dotyczy treść (nie importu)
+    imported_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    text: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(String)
+    domains: Mapped[list | None] = mapped_column(JSON)
+    sha256: Mapped[str] = mapped_column(String(64), unique=True)
+
+
+class Knowledge(Base):
+    """Wszystko, co agenci "wiedzą" poza danymi pomiarowymi: fakty z importu,
+    wnioski agentów (remember_fact), fakty z czatu. Zastępuje agent_memory
+    dla wiedzy (agent_memory zostaje tylko dla profilu użytkownika):
+    - `domain` = nazwa specjalisty (running/...) albo "general",
+    - `kind`: fakt | zdarzenie | zyciowka | preferencja | lekcja | decyzja | wniosek,
+    - `event_date`: kiedy to było / od kiedy obowiązuje - agent sam ocenia,
+      czy "PB 10 km z 2024" jest jeszcze aktualne,
+    - `source_type`/`source_id`/`source_agent`: skąd (document/agent/chat),
+    - `active` + `superseded_by`: rekoncyliacja zamiast nadpisywania - stary
+      fakt zostaje w historii, wskazuje na nowszy.
+    Do promptu idzie tylko DIGEST (patrz tools/knowledge.py), nie cała tabela."""
+
+    __tablename__ = "knowledge"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    content: Mapped[str] = mapped_column(String)
+    event_date: Mapped[dt.date | None] = mapped_column(Date)
+    source_type: Mapped[str] = mapped_column(String(16))  # document | agent | chat
+    source_id: Mapped[int | None] = mapped_column(Integer)  # documents.id dla document
+    source_agent: Mapped[str | None] = mapped_column(String(32))
+    confidence: Mapped[str] = mapped_column(String(8), default="medium")  # low | medium | high
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    superseded_by: Mapped[int | None] = mapped_column(ForeignKey("knowledge.id"))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class AgentMemory(Base):
+    """Od 2026-09-17 tylko profil użytkownika (agent="user_profile", patrz
+    tools/profile.py). Wiedza agentów przeniesiona do `knowledge`."""
+
     __tablename__ = "agent_memory"
     __table_args__ = (UniqueConstraint("agent", "key", name="uq_agent_memory_agent_key"),)
 

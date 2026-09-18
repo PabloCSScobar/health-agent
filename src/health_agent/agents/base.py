@@ -81,7 +81,7 @@ def model_display_name(agent_name: str) -> str:
     return spec
 
 
-def build_agent(agent_name: str, system_prompt: str, tools: list[Callable] | None = None, output_type: Any = str) -> Agent:
+def build_agent(agent_name: str, system_prompt: str, tools: list[Callable] | None = None, output_type: Any = str, retries: int = 1) -> Agent:
     model = resolve_model(agent_name)
 
     # Model nie wie jaki jest "dziś" - złapane na żywo: realną datę treningu
@@ -135,7 +135,7 @@ def build_agent(agent_name: str, system_prompt: str, tools: list[Callable] | Non
             anthropic_cache=True,
         )
 
-    agent = Agent(model, system_prompt=system_prompt, output_type=output_type, model_settings=model_settings)
+    agent = Agent(model, system_prompt=system_prompt, output_type=output_type, model_settings=model_settings, retries=retries)
     for tool_fn in tools or []:
         agent.tool_plain(tool_fn)
     return agent

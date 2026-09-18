@@ -12,6 +12,8 @@ struktur (historia kontuzji z datami), wtedy własna tabela.
 
 from __future__ import annotations
 
+import datetime as dt
+
 from health_agent.tools.memory import recall_all, remember
 
 PROFILE_AGENT = "user_profile"
@@ -31,6 +33,19 @@ PROFILE_KEYS: dict[str, str] = {
     "suplementy": "co bierze i kiedy",
     "inne": "cokolwiek innego istotnego dla treningu/diety",
 }
+
+
+def get_user_profile_updated_at() -> dict[str, "dt.datetime"]:
+    """Kiedy każdy klucz profilu był ostatnio zapisany - do rekoncyliacji z
+    datowanymi dokumentami (importer: dokument nowszy niż wpis -> nadpisuje)."""
+    from sqlalchemy import select
+
+    from health_agent.db.models import AgentMemory
+    from health_agent.db.session import get_session
+
+    with get_session() as session:
+        rows = session.execute(select(AgentMemory).where(AgentMemory.agent == PROFILE_AGENT)).scalars().all()
+        return {r.key: r.updated_at for r in rows}
 
 
 def get_user_profile() -> dict[str, str]:

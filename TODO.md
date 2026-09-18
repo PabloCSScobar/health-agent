@@ -173,3 +173,50 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 - Poranny/wieczorny raport dzienny - odrzucone jako szum (2026-09-16).
 - Faza 4 (bezpośrednie Suunto Cloud API) - tylko jeśli potrzebne Training
   Effect/VO2max; zatwierdzenie dla osób prywatnych niepewne.
+
+## Import wiedzy z zewnątrz - ZROBIONE 2026-09-18 (szczegóły: scripts/README.md)
+
+Pierwsza propozycja (surowy tekst + ekstrakcja do profilu/agent_memory +
+search_notes + potwierdzenie) po analizie: szkielet OK, ale 4 wady:
+1. `agent_memory` (klucz-wartość, unikalny (agent,key)) nie nadaje się na
+   dziesiątki faktów: nazwy kluczy z LLM niespójne, brak daty/źródła,
+   kolejny import nadpisuje lub dubluje, każdy fakt na zawsze w każdym
+   prompcie (puchnie).
+2. Brak rekoncyliacji: nowy fakt sprzeczny ze starym ("cel 85" z czerwca vs
+   "84" z dziś) - nie wiadomo, który wygrywa.
+3. Wyszukiwanie po słowach kluczowych w polskiej fleksji zawodzi; embeddingi
+   to zależność (pgvector) nieproporcjonalna do kilkudziesięciu krótkich
+   notatek.
+4. Fakty z cudzego streszczenia (Claude spekulował) trafiają do promptów bez
+   przeglądu - wpływają na porady.
+
+Docelowo:
+- [x] Tabela `documents` (tytuł, źródło, data dokumentu, tekst, streszczenie
+  3 linie, tagi/domeny) - oryginał w całości. NIE `manual_logs`.
+- [x] Tabela `knowledge` (jedna dla wniosków agentów, importu i faktów z
+  czatu): domena, rodzaj (fakt/zdarzenie/PB/preferencja/lekcja/decyzja),
+  treść, data ważności (od/do lub data zdarzenia), źródło (document_id /
+  agent / chat), pewność, aktywny. `remember_fact` docelowo pisze tutaj.
+- [x] Import: plik .txt/.md na Telegramie (Document handler) albo CLI
+  `health-agent import plik.md --domena running`; długi wklejony tekst
+  (>~800 zn.) -> jedno pytanie "zaimportować jako notatkę? tak/nie".
+- [x] Agent-importer (Sonnet, 1 wywołanie/dokument) dostaje ISTNIEJĄCĄ
+  wiedzę z domen dokumentu i zwraca operacje: dodaj / zaktualizuj(id) /
+  oznacz nieaktualne(id) / konflikt(id, pytanie) - rekoncyliacja, nie zrzut.
+  Fakty profilowe -> profil z regułą "nowsza data wygrywa, remis = pytanie".
+- [x] Potwierdzenie: numerowana lista ("zapisałem 14: 9 running, 3
+  nutrition, 2 profil; 1 konflikt: cel wagi 85 vs 84 - który?"), "usuń 3, 7"
+  jednym zdaniem. Aktywacja od razu, z łatwym cofnięciem (mniejsze tarcie
+  niż kolejka "do zatwierdzenia").
+- [x] Do promptu specjalisty tylko DIGEST domeny (aktywne, najważniejsze,
+  limit ~1500 zn., z datami - żeby sam ocenił staleness); reszta przez
+  narzędzie `get_knowledge(domena, rodzaj?, fraza?)` + `read_document(id)`
+  (dokumenty są krótkie - czytać w całości, cache to tania operacja).
+- [x] Eval: fixture-dokument -> liczba/domeny faktów, test konfliktu, test
+  że digest nie przekracza limitu, test "PB z 2024 oznaczony datą".
+- Świadomie pomijane: embeddingi/pgvector (do rewizji, gdy notatek >100).
+- [ ] Otwarte: `undo-import` nie cofa zmian w profilu (profil nie ma historii)
+  - jeśli będzie przeszkadzać, dodać historię wartości profilu.
+- [ ] Otwarte: ekstrakcja ma wariancję (12-15 faktów z tego samego
+  dokumentu, czasem pomija spekulacje zamiast oznaczać low) - akceptowalne,
+  raport pokazuje wszystko; przy problemach: temperature=0 dla importera.

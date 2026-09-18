@@ -8,6 +8,8 @@ dostaje - więc fizycznie nie da się zejść głębiej niż jeden poziom.
 
 from __future__ import annotations
 
+import datetime as dt
+import re
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -16,7 +18,7 @@ from health_agent.agents.base import build_agent, run_agent, run_agent_sync
 from health_agent.tools.body import get_body_composition_latest, get_body_composition_trend, get_body_trend
 from health_agent.tools.energy import estimate_daily_expenditure
 from health_agent.tools.manual import log_manual_entry
-from health_agent.tools.memory import recall_all, remember
+from health_agent.tools.knowledge import add_knowledge, get_knowledge, knowledge_digest, list_documents, read_document, set_knowledge_active
 from health_agent.tools.nutrition import (
     find_foods,
     get_energy_balance,
@@ -91,6 +93,11 @@ _PROMPT_SUFFIX = (
     "Nigdy o coś, co już jest w profilu; nigdy więcej niż jedno; nie przy "
     "krótkich odpowiedziach na pytanie o fakt. Odpowiedź użytkownika trafi "
     "do profilu automatycznie.\n"
+    "6. WIEDZA: w prompcie masz digest wiedzy o użytkowniku (z jego notatek i "
+    "wcześniejszych ustaleń) - uwzględniaj ją jak profil. Gdy pytanie dotyczy "
+    "czegoś, czego tam nie ma (stara kontuzja, poprzedni plan, życiówka), "
+    "użyj get_knowledge(domena, fraza) i w razie potrzeby read_document(id) "
+    "- oryginał jest zawsze dostępny, nie zgaduj.\n"
     "Odpowiadaj po polsku, zwięźle."
 )
 
@@ -171,12 +178,12 @@ ORCHESTRATOR_PROMPT = (
     "to obecna wiadomość użytkownika jest ODPOWIEDZIĄ - zapisz WSZYSTKIE "
     "fakty z niej ('brak'/'bez celu' też zapisuj, jako 'brak'), potem jedno "
     "zdanie potwierdzenia.\n\n"
-    "ZASADA 4 (wywiad): gdy PROFIL jest niekompletny (status niżej) i "
-    "użytkownik zaczyna rozmowę small talkiem ('cześć', 'hej', 'co tam') "
-    "albo pyta, co potrafisz - odpowiedz krótko i dołącz DOKŁADNIE treść "
-    "z sekcji WYWIAD niżej (bez zmian). Nie dołączaj wywiadu do odpowiedzi "
-    "na pytania o dane ani do potwierdzeń wpisów - specjaliści sami dopytają "
-    "o to, co im potrzebne, jednym pytaniem na raz.\n\n"
+    "ZASADA 5 (korekty wiedzy): po imporcie notatki użytkownik dostaje "
+    "numerowaną listę faktów (#id). 'usuń 3 i 7' / 'punkt 4 to nieprawda' -> "
+    "forget_knowledge([3, 7]); 'przywróć 12' / 'cofnij' -> restore_knowledge. "
+    "'Jakie mam notatki' -> list_documents. Pytania o TREŚĆ notatek (co "
+    "mówił poprzedni trener, jaką miałem kontuzję) -> delegate do "
+    "właściwego specjalisty, on ma get_knowledge/read_document.\n\n"
     "Przykład pytania:\n"
     "user: Ile miałem wczoraj kroków?\n"
     "-> wywołaj delegate(agent_name='recovery', question='ile kroków wczoraj?')\n"
@@ -228,25 +235,24 @@ def _prompt_with_memory(agent_name: str, base_prompt: str) -> str:
     """Prompt specjalisty + PROFIL użytkownika (fakty od niego: cele, wzrost,
     kontuzje - patrz tools/profile.py) + fakty zapamiętane przez tego agenta.
     Obie rzeczy są statyczne między pytaniami -> lądują w prompt cache."""
-    prompt = base_prompt + profile_prompt_block()
-    facts = recall_all(agent_name)
-    if facts:
-        facts_block = "\n".join(f"- {k}: {v}" for k, v in facts.items())
-        prompt += f"\n\nFakty zapamiętane przez Ciebie z poprzednich rozmów (Twoje wnioski, nie słowa użytkownika):\n{facts_block}"
-    return prompt
+    return base_prompt + profile_prompt_block() + knowledge_digest(agent_name)
 
 
 def _make_remember_tool(agent_name: str):
-    def remember_fact(key: str, value: str) -> str:
-        """Zapamiętaj trwały fakt o użytkowniku na przyszłość.
+    def remember_fact(content: str, kind: str = "wniosek", event_date: str | None = None) -> str:
+        """Zapamiętaj trwały fakt o użytkowniku na przyszłość (trafia do tabeli
+        wiedzy i do Twojego digestu w kolejnych rozmowach).
 
-        TYLKO: (a) fakt podany wprost przez użytkownika (cel, kontuzja,
-        preferencja) albo (b) wzorzec potwierdzony w >=3 niezależnych
-        obserwacjach (np. '3 z 3 biegów po <6h snu miały dryf >10%').
+        TYLKO: (a) fakt podany wprost przez użytkownika w tej rozmowie (cel,
+        kontuzja, preferencja, życiówka) - kind: fakt/preferencja/zyciowka/
+        decyzja, albo (b) wzorzec potwierdzony w >=3 niezależnych obserwacjach
+        (np. '3 z 3 biegów po <6h snu miały dryf >10%') - kind: lekcja.
         NIGDY: korelacja z jednego treningu/dnia, bieżące liczby, ogólna
-        wiedza trenerska. Jedna obserwacja to anegdota, nie fakt."""
-        remember(agent_name, key, value)
-        return "zapamiętane"
+        wiedza trenerska. Jedna obserwacja to anegdota, nie fakt.
+        `event_date` (YYYY-MM-DD) gdy fakt dotyczy konkretnej daty."""
+        date = dt.date.fromisoformat(event_date) if event_date else None
+        new_id = add_knowledge(agent_name, kind, content, event_date=date, source_type="agent", source_agent=agent_name)
+        return f"zapamiętane (#{new_id})"
 
     return remember_fact
 
@@ -262,7 +268,7 @@ def build_leaf_agent(agent_name: str):
     placeholder pasujący do schematu JSON. `ask_agent` (wyżej) sam owija
     zwrócony tekst w AgentAnswer - nie wymaga tego od modelu."""
     prompt, tools = SPECIALISTS[agent_name]
-    agent = build_agent(agent_name, _prompt_with_memory(agent_name, prompt), tools)
+    agent = build_agent(agent_name, _prompt_with_memory(agent_name, prompt), [*tools, get_knowledge, read_document])
     agent.tool_plain(_make_remember_tool(agent_name))
     return agent
 
@@ -271,7 +277,7 @@ def build_full_agent(agent_name: str):
     """Specjalista Z narzędziem ask_agent - używany jako cel delegate() z
     orchestratora, czyli na pierwszym poziomie zagnieżdżenia."""
     prompt, tools = SPECIALISTS[agent_name]
-    agent = build_agent(agent_name, _prompt_with_memory(agent_name, prompt), tools)
+    agent = build_agent(agent_name, _prompt_with_memory(agent_name, prompt), [*tools, get_knowledge, read_document])
     agent.tool_plain(_make_ask_agent_tool(agent_name))
     agent.tool_plain(_make_remember_tool(agent_name))
     return agent
@@ -285,14 +291,41 @@ async def _delegate(agent_name: str, question: str) -> str:
     return await run_agent(full, agent_name, question)
 
 
+def forget_knowledge(ids: list[int]) -> str:
+    """Dezaktywuj wpisy wiedzy o podanych numerach (#id z listy po imporcie
+    albo z get_knowledge) - gdy użytkownik mówi 'usuń 3 i 7', 'to
+    nieprawda', 'zapomnij o kontuzji kolana'. Odwracalne (restore_knowledge)."""
+    changed = set_knowledge_active(ids, False)
+    return f"Usunięto z aktywnej wiedzy: {changed}" if changed else "Nic nie zmieniono (nieznane id albo już nieaktywne)."
+
+
+def restore_knowledge(ids: list[int]) -> str:
+    """Przywróć wcześniej usunięte/zastąpione wpisy wiedzy ('przywróć 12',
+    'cofnij')."""
+    changed = set_knowledge_active(ids, True)
+    return f"Przywrócono: {changed}" if changed else "Nic nie zmieniono."
+
+
+_GREETING_RE = re.compile(
+    r"^\s*(cześć|czesc|hej|hejka|siema|elo|yo|hi|hello|dzień dobry|dzien dobry|witam|co tam|start|/start)\b[\s!.,?]*$",
+    re.IGNORECASE,
+)
+
+
+def _onboarding_reply(question: str) -> str | None:
+    """Wywiad o profil BEZ LLM: powitanie + niekompletny profil -> gotowa
+    wiadomość z pytaniami. Wcześniej robił to orchestrator wg zasady w
+    prompcie i (Haiku) doklejał wywiad do pytań o trening zamiast delegować -
+    złapane na żywo. Deterministycznie nie ma jak się pomylić."""
+    if _GREETING_RE.match(question) and missing_onboarding_keys():
+        return "Cześć! Pomagam analizować bieganie, siłownię, dietę, wagę i regenerację z Twoich danych.\n\n" + onboarding_message()
+    return None
+
+
 def _orchestrator_prompt() -> str:
     missing = missing_onboarding_keys()
-    status = "kompletny" if not missing else "niekompletny - brakuje: " + ", ".join(missing)
-    prompt = ORCHESTRATOR_PROMPT + f"\n\nPROFIL UŻYTKOWNIKA: {status}."
-    onboarding = onboarding_message()
-    if onboarding:
-        prompt += "\n\nWYWIAD (dołącz tylko wg ZASADY 4, dokładnie w tej formie):\n" + onboarding
-    return prompt
+    status = "kompletny" if not missing else "niekompletny (brakuje: " + ", ".join(missing) + ") - NIE dopytuj o to sam i nie doklejaj listy pytań; specjaliści zapytają o to, czego akurat potrzebują, a użytkownik może użyć /profil"
+    return ORCHESTRATOR_PROMPT + f"\n\nPROFIL UŻYTKOWNIKA: {status}."
 
 
 def build_orchestrator():
@@ -312,7 +345,11 @@ def build_orchestrator():
     # pierwsze - drugi fakt przepadał. Zwykłe narzędzie można wołać dowolnie
     # i łączyć z wpisem pomiaru w tej samej wiadomości; kosztuje jedną
     # dodatkową, tanią rundę Haiku na potwierdzenie - profil zmienia się rzadko.
-    agent = build_agent("orchestrator", _orchestrator_prompt(), [get_user_profile, set_user_profile_facts], output_type=[str, _delegate, log_manual_entry])
+    agent = build_agent(
+        "orchestrator", _orchestrator_prompt(),
+        [get_user_profile, set_user_profile_facts, forget_knowledge, restore_knowledge, list_documents],
+        output_type=[str, _delegate, log_manual_entry],
+    )
     return agent
 
 
@@ -335,6 +372,8 @@ def _with_history(question: str, history: list[tuple[str, str]] | None) -> str:
 def ask_orchestrator(question: str, history: list[tuple[str, str]] | None = None) -> str:
     """Wejście z zewnątrz gdy NIE jesteśmy jeszcze w żadnej pętli zdarzeń
     (CLI) - synchroniczne, patrz run_agent_sync."""
+    if (reply := _onboarding_reply(question)) is not None:
+        return reply
     orchestrator = build_orchestrator()
     return run_agent_sync(orchestrator, "orchestrator", _with_history(question, history))
 
@@ -345,5 +384,7 @@ async def ask_orchestrator_async(question: str, history: list[tuple[str, str]] |
     wywołanie `ask_orchestrator` (sync) tutaj wywaliłoby się identycznie jak
     wcześniej złapany błąd z zagnieżdżonym `run_sync` - `asyncio.run()`
     też nie da się odpalić wewnątrz już działającej pętli."""
+    if (reply := _onboarding_reply(question)) is not None:
+        return reply
     orchestrator = build_orchestrator()
     return await run_agent(orchestrator, "orchestrator", _with_history(question, history))

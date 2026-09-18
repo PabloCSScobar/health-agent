@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+from pathlib import Path
 
 
 def cmd_ingest_healthconnect(args: argparse.Namespace) -> None:
@@ -31,6 +32,36 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
     answer = ask_orchestrator(args.question)
     print(answer)
+
+
+def cmd_import(args: argparse.Namespace) -> None:
+    import asyncio
+
+    from health_agent.agents.importer import import_document
+
+    with open(args.file, encoding="utf-8") as f:
+        text = f.read()
+    doc_date = dt.date.fromisoformat(args.date) if args.date else None
+    title = args.title or Path(args.file).stem
+    print(asyncio.run(import_document(text, title=title, source="cli", doc_date=doc_date)))
+
+
+def cmd_undo_import(args: argparse.Namespace) -> None:
+    from health_agent.agents.importer import undo_import
+
+    print(undo_import(args.document_id))
+
+
+def cmd_knowledge(args: argparse.Namespace) -> None:
+    from health_agent.tools.knowledge import get_knowledge, list_documents
+
+    print("Dokumenty:")
+    for d in list_documents():
+        print(f"  #{d['id']} {d['title']} ({d['doc_date'] or '-'}, {d['chars']} zn., {d['domains']}) - {d['summary']}")
+    print("\nWiedza (aktywna):")
+    for k in get_knowledge(domain=args.domain, include_inactive=args.all, limit=200):
+        flag = "" if k["active"] else " [nieaktywny]"
+        print(f"  #{k['id']} [{k['domain']}/{k['kind']}{', ' + k['event_date'] if k['event_date'] else ''}] {k['content']}{flag}")
 
 
 def cmd_ingest_intervals(args: argparse.Namespace) -> None:
@@ -61,6 +92,21 @@ def main() -> None:
     intervals.add_argument("--since", required=True, help="Data od (YYYY-MM-DD)")
     intervals.add_argument("--until", required=False, help="Data do (YYYY-MM-DD), domyślnie dziś")
     intervals.set_defaults(func=cmd_ingest_intervals)
+
+    imp = sub.add_parser("import", help="Zaimportuj notatkę/streszczenie (.txt/.md) do wiedzy agentów")
+    imp.add_argument("file")
+    imp.add_argument("--title", required=False)
+    imp.add_argument("--date", required=False, help="Data, której dotyczy treść (YYYY-MM-DD)")
+    imp.set_defaults(func=cmd_import)
+
+    undo = sub.add_parser("undo-import", help="Cofnij import dokumentu o podanym id")
+    undo.add_argument("document_id", type=int)
+    undo.set_defaults(func=cmd_undo_import)
+
+    kn = sub.add_parser("knowledge", help="Pokaż dokumenty i aktywną wiedzę")
+    kn.add_argument("--domain", required=False)
+    kn.add_argument("--all", action="store_true", help="także nieaktywne")
+    kn.set_defaults(func=cmd_knowledge)
 
     chat = sub.add_parser("chat", help="Zadaj pytanie orchestratorowi (bez Telegrama, do testów)")
     chat.add_argument("question")

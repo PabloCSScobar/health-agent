@@ -574,3 +574,37 @@ NIE zrobione (użytkownik wybrał 1+2). Test end-to-end: "cześć" -> wywiad
 biegowy uwzględnia cel z profilu i kończy się jednym '❓' (liczba dni w
 tygodniu). Core 13/13 po zmianie promptu orchestratora. Profil testowy
 usunięty - użytkownik startuje od "cześć" albo `/profil`.
+
+**Import wiedzy z zewnątrz (2026-09-18).** Zaimplementowany plan z
+TODO.md ("Import wiedzy"): trzy warstwy - `documents` (oryginał w
+całości, dedup po sha256), `knowledge` (fakty z domeną, rodzajem, datą,
+źródłem, `active`/`superseded_by` - rekoncyliacja zamiast nadpisywania),
+digest do promptu (`knowledge_digest`: aktywne, wg wagi rodzaju i daty,
+limit 1500 zn.) + narzędzia `get_knowledge`/`read_document` u każdego
+specjalisty. `remember_fact` pisze teraz do `knowledge` (agent_memory
+zostaje tylko dla profilu). Importer (`agents/importer.py`, Sonnet,
+strukturalne wyjście, retries=3) dostaje istniejącą wiedzę + profil i
+zwraca add/update(id)/deactivate(id) z pytaniem przy konflikcie; profil:
+dopisuje brakujące, nadpisuje tylko gdy dokument datowany po ostatnim
+zapisie klucza, inaczej pytanie. Wejścia: `health-agent import plik.md
+[--date]`, plik .txt/.md na Telegramie (podpis YYYY-MM-DD = data
+dokumentu), długi wklejony tekst (>=800 zn., bez '?' na końcu) -> pytanie
+"zaimportować? tak". Korekty: 'usuń 3 i 7' / 'przywróć 12' (narzędzia
+orchestratora), `undo-import ID` (pełny rollback wiedzy + dokumentu;
+profilu nie cofa - raport mówi, co zmienił).
+Wyniki na fixture (fikcyjne streszczenie, `scripts/fixtures/`): 14 faktów
+z właściwymi domenami/rodzajami, daty z dokładnością do miesiąca,
+spekulacja AI oznaczona low; drugi dokument: 2 update (stare w historii),
+1 deactivate, 1 add, powtórzony fakt pominięty, konflikty profilu jako
+pytania. Koszt ~$0.02-0.03/dokument, ~18 s. Running coach realnie używa
+wiedzy (odpowiedź o interwałach na bieżni przywołała plan z czerwca i
+preferencję "nie na bieżni" z notatki, plus jedno '❓').
+Złapane po drodze: (a) wywiad o profil przez orchestratora (ZASADA 4 z
+17.09) - Haiku doklejał kwestionariusz do pytania o trening i NIE
+delegował; przeniesione do deterministycznego kodu przed LLM
+(`_onboarding_reply`: powitanie + niekompletny profil -> gotowa
+wiadomość), reguła usunięta z promptu; (b) importer raz zwrócił strukturę
+niezgodną ze schematem -> retries=3 w build_agent; (c) dwie błędne
+asercje w evalu (nowy wpis "84 kg (zmienione z 85)" łapany jako stary
+cel; spekulację wolno pominąć). Eval `import`: 6 testów, 2x 6/6; core
+13/13 po zmianach promptu orchestratora.

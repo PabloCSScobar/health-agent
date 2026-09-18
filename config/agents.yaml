@@ -21,3 +21,6 @@ strength: anthropic:claude-haiku-4-5
 nutrition: anthropic:claude-haiku-4-5
 body: anthropic:claude-haiku-4-5
 recovery: anthropic:claude-haiku-4-5
+# Importer wiedzy (agents/importer.py): ekstrakcja + rekoncyliacja faktów z
+# notatek - jedno wywołanie na dokument, jakość ważniejsza niż cena.
+importer: anthropic:claude-sonnet-5

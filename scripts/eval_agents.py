@@ -12,6 +12,7 @@ registry.py albo modelu w config/agents.yaml:
     uv run python scripts/eval_agents.py            # core (routing, wpisy) - tanio
     uv run python scripts/eval_agents.py running    # RunningCoach: narzędzia + 6 pytań + sędzia LLM
     uv run python scripts/eval_agents.py coaches    # recovery+nutrition+body+strength (albo jedna nazwa)
+    uv run python scripts/eval_agents.py import     # import wiedzy: ekstrakcja, rekoncyliacja, undo, użycie
     uv run python scripts/eval_agents.py all
 
 Testy 10-12 (wpisy ręczne) same sprzątają po sobie z bazy - bezpieczne do
@@ -21,6 +22,7 @@ uruchomienia na produkcyjnej bazie, ale i tak najlepiej robić to lokalnie/dev.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import re
 import sys
 import time
@@ -631,6 +633,145 @@ def _strength_has_data() -> bool:
     return bool(get_strength_sessions(90)["manual_sessions"])
 
 
+
+# ---------------------------------------------------------------------------
+# Import wiedzy (agents/importer.py): ekstrakcja, rekoncyliacja, dedup, undo,
+# digest + jeden test agentowy (czy coach używa wiedzy z notatki).
+# ---------------------------------------------------------------------------
+
+async def run_import_suite() -> tuple[int, int, float]:
+    from pathlib import Path
+
+    from sqlalchemy import delete as _delete
+
+    from health_agent.agents.importer import import_document, undo_import
+    from health_agent.db.models import AgentMemory, Document, Knowledge
+    from health_agent.tools import knowledge as K
+    from health_agent.tools import profile as P
+
+    fixtures = Path(__file__).parent / "fixtures"
+    doc1 = (fixtures / "import_fixture_bieganie.md").read_text(encoding="utf-8")
+    doc2 = (fixtures / "import_fixture_wrzesien.md").read_text(encoding="utf-8")
+    profile_before = P.get_user_profile()
+    failures, n, cost = 0, 0, 0.0
+    doc_ids: list[int] = []
+
+    def _doc_id(report: str) -> int | None:
+        m = re.search(r"\(#(\d+)", report)
+        return int(m.group(1)) if m else None
+
+    def result(name: str, errors: list[str], extra: str = "") -> None:
+        nonlocal failures, n
+        n += 1
+        status = "PASS" if not errors else "FAIL"
+        print(f"{status}: {name}{('  (' + extra + ')') if extra else ''}")
+        for e in errors:
+            print(f"    - {e}")
+        if errors:
+            failures += 1
+
+    print("=== Import wiedzy ===")
+    try:
+        # 1. ekstrakcja
+        _clear_agent_runs()
+        r1 = await import_document(doc1, title="EVAL fixture czerwiec", source="cli")
+        c1 = _total_cost(); cost += c1
+        d1 = _doc_id(r1)
+        errs = []
+        if d1 is None:
+            errs.append("brak id dokumentu w raporcie")
+        else:
+            doc_ids.append(d1)
+            rows = K.knowledge_from_document(d1)
+            if len(rows) < 10:
+                errs.append(f"za mało faktów: {len(rows)} (<10)")
+            doms = {r["domain"] for r in rows}
+            if not {"running", "nutrition"} <= doms:
+                errs.append(f"brak domen running/nutrition: {doms}")
+            if not any(r["kind"] == "zyciowka" and (r["event_date"] or "").startswith("2024") for r in rows):
+                errs.append("brak życiówki 10 km z datą 2024")
+            if not any(r["kind"] == "lekcja" for r in rows):
+                errs.append("brak żadnej 'lekcji' (sen <6h -> gorszy bieg)")
+            spec = [r for r in rows if "przetren" in r["content"].lower()]
+            if spec and not any(r["confidence"] == "low" for r in spec):
+                errs.append("spekulacja o przetrenowaniu zapisana bez 'niskiej pewności' (prompt: low albo pomiń)")
+            prof = P.get_user_profile()
+            added = set(prof) - set(profile_before)
+            if not added:
+                errs.append("import nie dopisał nic do profilu (oczekiwano np. cel_biegowy/kontuzje)")
+            if any(k in profile_before and prof[k] != profile_before[k] for k in profile_before):
+                errs.append("import nadpisał istniejący klucz profilu bez daty dokumentu")
+        result("import: ekstrakcja z fixture", errs, f"${c1:.4f}, {len(K.knowledge_from_document(d1)) if d1 else 0} faktów")
+
+        # 2. dedup po hashu
+        r_dup = await import_document(doc1, title="EVAL fixture czerwiec", source="cli")
+        result("import: dedup tego samego dokumentu", [] if "już zaimportowany" in r_dup else [f"brak komunikatu o duplikacie: {r_dup[:120]}"])
+
+        # 3. rekoncyliacja
+        _clear_agent_runs()
+        r2 = await import_document(doc2, title="EVAL fixture wrzesień", source="cli", doc_date=dt.date(2026, 9, 15))
+        c2 = _total_cost(); cost += c2
+        d2 = _doc_id(r2)
+        errs = []
+        if d2 is None:
+            errs.append("brak id dokumentu w raporcie")
+        else:
+            doc_ids.append(d2)
+            with get_session() as session:
+                allk = session.execute(select(Knowledge)).scalars().all()
+                session.expunge_all()
+            active_2021 = [k for k in allk if k.active and "2021" in k.content]
+            if len(active_2021) != 1:
+                errs.append(f"fakt 'od 2021' powinien być raz (aktywny), jest {len(active_2021)}")
+            superseded = [k for k in allk if k.superseded_by is not None]
+            if not superseded:
+                errs.append("żaden stary fakt nie został zastąpiony (oczekiwano cel wagi 85->84)")
+            old_goal = [k for k in allk if k.source_id == d1 and "85" in k.content and "cel" in k.content.lower()]
+            if old_goal and any(k.active for k in old_goal):
+                errs.append("stary cel wagowy 85 kg (z pierwszego dokumentu) nadal aktywny")
+            shin = [k for k in allk if "shin" in k.content.lower() and k.source_id == d1 and k.kind == "zdarzenie"]
+            if shin and all(k.active for k in shin):
+                errs.append("kontuzja shin splints nie została dezaktywowana mimo 'temat zamknięty'")
+            if "❓" not in r2 or "cel_waga_kg" not in r2:
+                errs.append("brak pytania o konflikt profilu cel_waga_kg (profil zapisany dziś, dokument z 15.09 -> pytanie)")
+        result("import: rekoncyliacja drugim dokumentem", errs, f"${c2:.4f}")
+
+        # 4. digest w limicie
+        dg = K.knowledge_digest("running")
+        result("import: digest running w limicie", [] if len(dg) <= K.DIGEST_LIMIT_CHARS + 300 and "52:10" in dg else [f"digest {len(dg)} zn. / brak życiówki"])
+
+        # 5. agent używa wiedzy
+        _clear_agent_runs()
+        answer = await ask_orchestrator_async("Jaki mam rekord na 10 km?")
+        c3 = _total_cost(); cost += c3
+        errs = _expect_delegate("running")(answer, _routing())
+        if "52:10" not in answer:
+            errs.append(f"odpowiedź nie zawiera rekordu 52:10 z notatki: {answer[:160]}")
+        result("import: running odpowiada z wiedzy (rekord 10 km)", errs, f"${c3:.4f}")
+
+        # 6. undo
+        errs = []
+        for did in reversed(doc_ids):
+            undo_import(did)
+        with get_session() as session:
+            left_docs = session.execute(select(Document).where(Document.id.in_(doc_ids))).scalars().all()
+            left_k = session.execute(select(Knowledge).where(Knowledge.source_id.in_(doc_ids))).scalars().all()
+        if left_docs or left_k:
+            errs.append(f"po undo zostały: {len(left_docs)} dokumentów, {len(left_k)} wpisów")
+        result("import: undo usuwa wiedzę i dokumenty", errs)
+    finally:
+        # sprzątanie: dokumenty/wiedza z fixture + klucze profilu dopisane przez import
+        with get_session() as session:
+            for did in doc_ids:
+                session.execute(_delete(Knowledge).where(Knowledge.source_id == did, Knowledge.source_type == "document"))
+                session.execute(_delete(Document).where(Document.id == did))
+            for key in set(P.get_user_profile()) - set(profile_before):
+                session.execute(_delete(AgentMemory).where(AgentMemory.agent == P.PROFILE_AGENT, AgentMemory.key == key))
+        for key, val in profile_before.items():
+            P.remember(P.PROFILE_AGENT, key, val)
+    return failures, n, cost
+
+
 async def run_running_suite() -> tuple[int, int, float]:
     print("=== RunningCoach: testy jednostkowe narzędzi (bez LLM) ===")
     errs = unit_test_running_tools()
@@ -677,6 +818,10 @@ async def main() -> None:
     suite = sys.argv[1] if len(sys.argv) > 1 else "core"
     if suite == "running":
         failures, n, cost = await run_running_suite()
+        print(f"\nRazem: {n} testów, {failures} nieudanych, koszt LLM: ${cost:.4f}")
+        sys.exit(1 if failures else 0)
+    if suite == "import":
+        failures, n, cost = await run_import_suite()
         print(f"\nRazem: {n} testów, {failures} nieudanych, koszt LLM: ${cost:.4f}")
         sys.exit(1 if failures else 0)
     if suite in COACH_CASES or suite == "coaches":
