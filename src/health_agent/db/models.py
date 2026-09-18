@@ -211,6 +211,18 @@ class Knowledge(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
+class IngestState(Base):
+    """Data ostatniego udanego pollu per źródło - żeby po przerwie (serwer
+    wyłączony, awaria) polling sam dociągnął CAŁĄ lukę, a nie tylko stałe
+    ostatnie N dni (patrz scheduler.py: poll_intervals_icu)."""
+
+    __tablename__ = "ingest_state"
+
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_synced_date: Mapped[dt.date] = mapped_column(Date)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class AgentMemory(Base):
     """Od 2026-09-17 tylko profil użytkownika (agent="user_profile", patrz
     tools/profile.py). Wiedza agentów przeniesiona do `knowledge`."""

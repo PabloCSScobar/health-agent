@@ -133,6 +133,8 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 
 ## Niezawodność i dostęp
 
+- [x] Backfill luki w Intervals.icu po dłuższym przestoju - `ingest_state`
+  + okno liczone od ostatniego syncu (2026-09-18, scripts/README.md).
 - [ ] **PILNE: autostart procesów po restarcie WSL.** 2026-09-17: po restarcie
   WSL/Dockera baza wstała sama (`restart: unless-stopped`), ale uvicorn
   (webhook + scheduler: polling, alerty, backup) i bot Telegram to procesy

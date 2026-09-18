@@ -20,8 +20,9 @@ from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from health_agent.db.models import BodyComposition, NutritionDay, Workout
+from health_agent.db.models import BodyComposition, IngestState, NutritionDay, Workout
 from health_agent.db.session import get_session
 from health_agent.ingest.intervals import ingest_range
 from health_agent.settings import settings
@@ -35,20 +36,64 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # potrafi doliczać/poprawiać dane (np. ctl/atl, spóźniona synchronizacja
 # zegarka) także dla ostatnich kilku dni, nie tylko bieżącego.
 POLL_LOOKBACK_DAYS = 3
+POLL_MAX_BACKFILL_DAYS = 60  # bezpiecznik - dłuższa przerwa niż to wymaga ręcznego `health-agent ingest intervals --since`
 POLL_INTERVAL_MINUTES = 60
+_INGEST_SOURCE = "intervals_icu"
+
+
+def _last_synced_date(session, source: str) -> dt.date | None:
+    row = session.get(IngestState, source)
+    return row.last_synced_date if row else None
+
+
+def _mark_synced(session, source: str, date: dt.date) -> None:
+    stmt = (
+        pg_insert(IngestState)
+        .values(source=source, last_synced_date=date)
+        .on_conflict_do_update(index_elements=["source"], set_={"last_synced_date": date})
+    )
+    session.execute(stmt)
 
 
 def poll_intervals_icu() -> None:
+    """Okno pobierania liczone OD OSTATNIEGO UDANEGO SYNCU, nie od stałych
+    N dni wstecz - złapane na żywo: serwer stał ~16h po restarcie WSL, przy
+    stałym oknie 3 dni nic by się nie zgubiło tym razem, ale przy dłuższej
+    przerwie (>3 dni) luka nigdy nie zostałaby dociągnięta automatycznie.
+    Teraz: `oldest` = min(dziś - POLL_LOOKBACK_DAYS, ostatni sync - 1 dzień
+    zakładki), ograniczone z dołu przez POLL_MAX_BACKFILL_DAYS (dłuższa
+    przerwa = ręczny `ingest intervals --since`, żeby nie ciągnąć
+    bezterminowo przy np. skasowanym stanie)."""
     newest = dt.date.today()
-    oldest = newest - dt.timedelta(days=POLL_LOOKBACK_DAYS)
+    with get_session() as session:
+        last_synced = _last_synced_date(session, _INGEST_SOURCE)
+    default_oldest = newest - dt.timedelta(days=POLL_LOOKBACK_DAYS)
+    if last_synced is None:
+        oldest = default_oldest
+    else:
+        oldest = min(default_oldest, last_synced - dt.timedelta(days=1))
+    floor = newest - dt.timedelta(days=POLL_MAX_BACKFILL_DAYS)
+    if oldest < floor:
+        logger.warning(
+            "Luka w danych Intervals.icu większa niż %d dni (ostatni sync: %s) - "
+            "pobieram tylko od %s, resztę dociągnij ręcznie: "
+            "`uv run health-agent ingest intervals --since <data>`",
+            POLL_MAX_BACKFILL_DAYS, last_synced, floor,
+        )
+        oldest = floor
+
     try:
         with get_session() as session:
             summary = ingest_range(session, oldest, newest)
-        logger.info("Intervals.icu poll OK: %s", summary)
+            _mark_synced(session, _INGEST_SOURCE, newest)
+        logger.info("Intervals.icu poll OK (od %s): %s", oldest, summary)
     except Exception:
         # Świadomie łapiemy wszystko i tylko logujemy - błąd jednego cyklu
         # (np. chwilowy problem sieciowy) nie może ubić całego schedulera,
         # kolejny cykl i tak spróbuje ponownie za POLL_INTERVAL_MINUTES.
+        # `_mark_synced` NIE woła się przy wyjątku - luka zostaje widoczna
+        # i następny cykl spróbuje ją dociągnąć ponownie, zamiast po cichu
+        # przeskoczyć dzień, który się nie udał.
         logger.exception("Intervals.icu poll nieudany")
 
 

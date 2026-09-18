@@ -608,3 +608,22 @@ niezgodną ze schematem -> retries=3 w build_agent; (c) dwie błędne
 asercje w evalu (nowy wpis "84 kg (zmienione z 85)" łapany jako stary
 cel; spekulację wolno pominąć). Eval `import`: 6 testów, 2x 6/6; core
 13/13 po zmianach promptu orchestratora.
+
+**Polling Intervals.icu z pamięcią luki (2026-09-18).** Pytanie
+użytkownika po nocnym restarcie WSL (serwer stał ~16h, webhook z telefonu
+"martwy" 17,5h): czy dłuższa przerwa dociągnie zaległe dane? Odpowiedź
+przed zmianą: NIE dla przerw >3 dni - `POLL_LOOKBACK_DAYS=3` liczyło okno
+od "dziś", nie od ostatniego udanego syncu, więc luka >3 dni nigdy nie
+zostałaby dociągnięta automatycznie (dane na Intervals.icu nie giną, ale
+trzeba by pamiętać, żeby ręcznie odpalić `ingest intervals --since`).
+Naprawione: nowa tabela `ingest_state` (source, last_synced_date) -
+`poll_intervals_icu` liczy okno jako `min(dziś-3, ostatni_sync-1dzień
+zakładki)`, więc SAMO dociąga całą lukę przy dowolnie długiej przerwie w
+działaniu serwera. Bezpiecznik `POLL_MAX_BACKFILL_DAYS=60` - dłuższa luka
+(albo pierwsza instalacja) obcina okno i loguje WARNING z gotową komendą
+do ręcznego dociągnięcia reszty, zamiast bez ostrzeżenia ciągnąć
+bezterminowo. `_mark_synced` woła się TYLKO po udanym `ingest_range` (w
+tym samym try) - błąd sieci/API nie "zjada" dnia, następny cykl spróbuje
+ponownie. Przetestowane bezpośrednim wywołaniem z podstawionym stanem: luka
+5 dni -> pobrane od dziś-6 (zakładka), luka 90 dni -> obcięte do 60 z
+ostrzeżeniem. Eval core 13/13 bez regresji.
