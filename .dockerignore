@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+.python-version
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.claude
+.codex
+secrets
+backups
+data

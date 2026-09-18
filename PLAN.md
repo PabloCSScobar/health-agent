@@ -6,58 +6,52 @@ pliki, weryfikację. Szacunki kosztu = tokeny/API, nie "dni pracy". Stan
 tła: `TODO.md` (co i dlaczego), `scripts/README.md` (historia decyzji).
 
 Fakty sprawdzone przed planem (nie założenia):
-- WSL ma systemd (`/etc/wsl.conf: systemd=true`, PID 1 = systemd),
-  `tailscaled` już działa jako usługa systemd -> autostart przez unity
-  systemd, bez Dockerfile. Docker Desktop (Windows) podnosi dystrybucję i
-  kontener bazy przy logowaniu - to dlatego baza "wstawała sama".
+- WSL ma systemd, ale wdrożenie aplikacji zostało ujednolicone przez Docker
+  Compose dla WSL i VPS. Docker Desktop (Windows) podnosi dystrybucję i
+  kontenery przy logowaniu; na VPS autostart zapewnia systemowa usługa
+  Dockera oraz `restart: unless-stopped`.
 - python-telegram-bot 22.8: jest `MessageReactionHandler`; reakcje
   przychodzą tylko gdy `run_polling(allowed_updates=...)` zawiera
   `message_reaction`.
 - Biblioteka Fitatu: `login(email, password)`, `refresh_access_token`,
   `get_day_plan(date)` - refresh flow jest, brakuje tylko poświadczeń.
-- Brak `Dockerfile` - konteneryzacja aplikacji zostaje na Fazę 6.
+- `Dockerfile` i pełny Compose są wdrożone; migracja na VPS pozostaje operacją utrzymaniową.
 
 ---
 
-## 1. Autostart po restarcie WSL (PILNE)
+## 1. Przenośne wdrożenie i autostart (WDROŻONE W KODZIE 2026-09-18)
 
-**Cel:** po restarcie Windows/WSL webhook, scheduler i bot wstają same;
-padnięty proces jest restartowany.
+**Cel:** jedna instalacja dla WSL i VPS; baza, webhook, scheduler i bot
+wstają razem, a padnięte procesy są restartowane.
 
-**Decyzja:** systemd (system-level, `User=pawel`), nie Docker i nie
-`--user` (user-units wymagają lingera i sesji; system-units startują z
-dystrybucją niezależnie od logowania do WSL). Docker zostaje dla bazy.
+**Decyzja:** Docker Compose, nie osobne unity systemd aplikacji. Systemd na
+VPS zarządza Dockerem; na Windows autostart demona zapewnia Docker Desktop.
+Tailscale działa na hoście i obsługuje HTTPS przed lokalnym portem API.
 
-**Kroki:**
-1. `deploy/health-agent-api.service` i `deploy/health-agent-bot.service`:
-   `WorkingDirectory=/home/pawel/projects/health_agent`, `ExecStart=uv run
-   uvicorn ...` (pełna ścieżka do `uv`: `which uv`), `Restart=always`,
-   `RestartSec=10`, `After=network-online.target docker.service
-   tailscaled.service`, `Wants=network-online.target`. Logi do journald
-   (`journalctl -u health-agent-api -f`).
-2. `deploy/wait_for_db.sh` jako `ExecStartPre`: pętla `pg_isready` przez
-   `docker compose exec db` (max 120 s) - Docker Desktop podnosi bazę z
-   opóźnieniem względem systemd w WSL; bez tego pierwszy poll/webhook po
-   starcie wysypie się na połączeniu.
-3. `deploy/install.sh`: kopiuje unity do `/etc/systemd/system/`,
-   `daemon-reload`, `enable --now`. Jednorazowo `sudo`.
-4. Usunąć z README/notatek instrukcje `nohup`; `scripts/README.md` -
-   wpis "uruchamianie = systemd".
-5. **Sprawdzić, czy `tailscaled` wstaje przed API** - inaczej cert/adres
-   MagicDNS niedostępne przez chwilę; `After=tailscaled.service` załatwia
-   kolejność, `Restart=always` załatwia wyścig.
+**Zrealizowane:**
+1. `Dockerfile`: Python 3.12 + `uv.lock`, klient PostgreSQL, proces non-root.
+2. Compose: `db`, jednorazowe `migrate`, jedno-workerowe `api` ze schedulerem
+   i `bot`; healthchecki, zależności i `restart: unless-stopped`.
+3. `deploy/install.sh`, `doctor.sh`, `update.sh` oraz instrukcja WSL/VPS.
+4. Backup używa `pg_dump` względem `DATABASE_URL`, bez socketa Dockera.
+5. `.env.example` jest pełnym szablonem wdrożeniowym; instalator generuje
+   nowe hasło i sekret tylko przy nowej instalacji, nie zmienia istniejącej bazy.
 
-**Weryfikacja:** `sudo systemctl restart health-agent-api` -> `/health`
-odpowiada; `kill -9` procesu -> wraca w 10 s; `wsl --shutdown` z Windows,
-ponowne wejście -> oba serwisy `active`, webhook z telefonu ("Sync Now")
-ląduje w `raw_payloads`, bot odpowiada na Telegramie. Test negatywny: bez
-działającej bazy `ExecStartPre` czeka, nie startuje aplikacji na ślepo.
+**Weryfikacja automatyczna:** build i uruchomienie obrazu non-root z klientem
+PostgreSQL 16, parser Compose, składnia skryptów, kompilacja Pythona, CLI,
+test jednostkowy backupu oraz izolowany test PostgreSQL 16: wszystkie migracje,
+syntetyczny rekord, prawdziwy `pg_dump`, restore i porównanie danych.
 
-**Ryzyko:** WSL nie startuje bez uruchomienia Docker Desktop / okna WSL po
-zalogowaniu do Windows - to poza systemd; jeśli Docker Desktop ma "start at
-login" (sprawdzić), dystrybucja z integracją wstaje razem z nim. Jeśli nie:
-Task Scheduler w Windows z `wsl.exe -d <distro> -- true` przy logowaniu
-(jedna linia, dopisać do `deploy/README`).
+**Weryfikacja operacyjna:** lokalne wdrożenie Compose przeszło diagnostykę,
+healthcheck przez Tailscale oraz kontrolowane awarie procesów API i bota;
+oba kontenery wróciły automatycznie dzięki polityce restartu. Do wykonania
+pozostaje restart całego Dockera/WSL lub VPS, webhook z telefonu i odpowiedź
+bota. Przed migracją wyłączyć starą instancję, aby nie dublować schedulera ani
+Telegram long polling.
+
+**Ryzyko:** WSL nie startuje bez Docker Desktop lub innego procesu. Jeżeli
+opcja „start at login” nie podnosi dystrybucji, użyć Harmonogramu zadań Windows
+z `wsl.exe -d Ubuntu-24.04 -- true`.
 
 ---
 

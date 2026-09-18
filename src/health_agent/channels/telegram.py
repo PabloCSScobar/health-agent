@@ -243,6 +243,8 @@ def build_bot():
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     app = build_bot()
     print("Bot Telegram działa (long polling). Ctrl+C żeby zatrzymać.")
     app.run_polling()

@@ -160,20 +160,17 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
   4. Do czasu decyzji: alert o martwym źródle (już działa, próg 48h) jest
      jedyną siatką bezpieczeństwa - żadna dodatkowa praca nie jest pilna,
      dopóki się nie powtórzy.
-- [ ] **PILNE: autostart procesów po restarcie WSL.** 2026-09-17: po restarcie
-  WSL/Dockera baza wstała sama (`restart: unless-stopped`), ale uvicorn
-  (webhook + scheduler: polling, alerty, backup) i bot Telegram to procesy
-  odpalane ręcznie przez `nohup` - zniknęły, webhooki z telefonu nie
-  działały, aż użytkownik zauważył. Alert o martwym źródle też nie przyszedł,
-  bo żyje w tym samym procesie. Opcje: (a) oba jako usługi w
-  `docker-compose.yml` z `restart: unless-stopped` (najspójniej z Fazą 6),
-  (b) systemd --user + `loginctl enable-linger`, (c) Task Scheduler w
-  Windows odpalający `wsl -d ... -- uv run ...` przy logowaniu.
+- [x] **Autostart aplikacji i przenośne wdrożenie.** Dockerfile + Compose
+  uruchamiają bazę, migracje, pojedyncze API ze schedulerem i bota; procesy
+  mają `restart: unless-stopped`. Są skrypty instalacji, diagnostyki i
+  aktualizacji oraz instrukcja WSL/VPS. Backup nie zależy już od socketa
+  Dockera. Restart procesów API i bota został sprawdzony wraz z healthcheckiem;
+  do wykonania operacyjnie pozostaje pełny restart hosta i test webhooka.
 - [ ] **Przenosiny na VPS/RPi (Faza 6) - ważniejsze niż się wydaje.**
-  Webhook, polling, alerty i backup żyją w JEDNYM procesie na PC
-  (`uvicorn`). Health Connect Webhook ma lookback 48h → PC wyłączony na
-  weekend = dane bezpowrotnie stracone, a alert o tym też nie przyjdzie (ten
-  sam proces). Docker Compose i Tailscale już gotowe pod przenosiny.
+  Warstwa instalacyjna jest gotowa. Pozostaje przygotowanie hosta z Dockerem
+  i Tailscale, dump/restore, przełączenie URL webhooka i wyłączenie starej
+  instancji. Health Connect Webhook ma lookback 48h, więc do czasu migracji
+  wyłączony PC nadal oznacza ryzyko utraty danych.
 - [ ] **Backup poza dyskiem PC** - `backups/` leży na tym samym dysku co
   baza. Sync do chmury / drugiego node'a Tailscale / innego urządzenia.
 - [ ] **Deterministyczne nudge'e** (nie LLM, reguły w schedulerze jak

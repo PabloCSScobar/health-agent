@@ -129,7 +129,7 @@ Sekrety w `.env` (skopiuj z `.env.example`).
    (jest tylko na Windows-hoście) - trzeba było doinstalować `tailscale`
    wewnątrz WSL osobno (`curl -fsSL https://tailscale.com/install.sh | sh`
    + `sudo tailscale up`), co dało WSL własny, stabilny adres w tailnecie
-   (`pcdom.tail8242a2.ts.net`, niezależny od zmieniającego się IP WSL).
+   (`<urzadzenie>.<tailnet>.ts.net`, niezależny od zmieniającego się IP WSL).
    Po drodze dwie przeszkody, obie rozwiązane:
    - `tailscale up` wisiał w nieskończoność (log pokazywał powtarzane
      `RegisterReq` bez odpowiedzi) - naprawione przez `tailscale up --reset`.

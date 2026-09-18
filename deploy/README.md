@@ -1,0 +1,89 @@
+# Wdrożenie
+
+Ten katalog obsługuje ten sam wariant Docker Compose na WSL i VPS. Docker
+zarządza autostartem bazy, API i bota przez `restart: unless-stopped`.
+API ma dokładnie jeden worker, ponieważ w jego procesie działa scheduler.
+
+## Nowa instalacja
+
+Wymagane są Docker Engine z Compose v2 oraz OpenSSL. Na VPS zalecany jest
+Tailscale; port API jest publikowany wyłącznie na `127.0.0.1`.
+
+```bash
+git clone <adres-repozytorium> health_agent
+cd health_agent
+./deploy/install.sh
+```
+
+Pierwsze wywołanie tworzy `.env`, generuje hasło bazy oraz sekret webhooka
+i zatrzymuje się, aby można było wpisać tokeny. Po uzupełnieniu pliku uruchom
+skrypt ponownie. Sekretów nie należy commitować ani wklejać do logów.
+
+Dla Tailscale można wystawić lokalne API poleceniem wykonywanym na hoście:
+
+```bash
+sudo tailscale serve --bg http://127.0.0.1:8000
+```
+
+Adres HTTPS pokazany przez Tailscale ustaw jako bazę webhooka w telefonie.
+Nie wystawiaj portu 8000 publicznie.
+
+## Istniejąca baza
+
+Instalator celowo nie generuje `POSTGRES_PASSWORD` dla istniejącego
+`.env`. Wartość musi odpowiadać hasłu zapisanemu w istniejącym wolumenie.
+W dotychczasowej lokalnej konfiguracji domyślną wartością było
+`health_agent_dev`; przed migracją na VPS należy ją zmienić kontrolowaną
+procedurą, a nie samą edycją Compose.
+
+Eksport starej instancji wykonaj przed przełączeniem procesów. Na czas
+przenosin zatrzymaj stare API i bota, aby nie działały dwa schedulery ani
+dwa procesy Telegram long polling. Dump można odtworzyć tak:
+
+```bash
+gunzip -c backup.sql.gz | docker compose exec -T db psql -U health_agent -d health_agent
+```
+
+Najpierw przetestuj odtworzenie na bazie testowej. Nie używaj tego polecenia
+na właściwej bazie bez zweryfikowanego backupu.
+
+## Utrzymanie
+
+```bash
+./deploy/smoke-test.sh
+./deploy/doctor.sh
+docker compose logs -f api
+docker compose logs -f bot
+./deploy/update.sh
+```
+
+`smoke-test.sh` tworzy odizolowany PostgreSQL, stosuje migracje, zapisuje
+syntetyczny rekord, wykonuje prawdziwy backup i odtwarza go do drugiej bazy.
+Po zakończeniu usuwa swoje tymczasowe kontenery, sieć i wolumen.
+
+`update.sh` buduje obraz, wykonuje backup przed migracją, zatrzymuje API i bota,
+stosuje migracje, uruchamia usługi i czeka na ich gotowość. Jeśli migracja
+się nie powiedzie, procesy pozostają zatrzymane do ręcznej diagnozy. Kod
+należy wcześniej pobrać świadomie przez `git pull --ff-only`; skrypt nie
+aktualizuje repozytorium automatycznie.
+
+Backupy znajdują się w nazwanym wolumenie `health_agent_backups`.
+Kopia na tym samym hoście nie chroni przed awarią dysku; osobny backup poza
+VPS pozostaje wymagany.
+
+## Autostart
+
+Na VPS włącz usługę Docker przy starcie systemu:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+Na Windows/WSL Docker Desktop musi mieć włączone uruchamianie przy logowaniu.
+Po uruchomieniu demona Docker kontenery z `restart: unless-stopped` wracają
+automatycznie. Jeżeli Docker Desktop nie uruchamia dystrybucji WSL, można
+dodać w Harmonogramie zadań Windows komendę
+`wsl.exe -d Ubuntu-24.04 -- true`.
+Restart procesów aplikacji można sprawdzić bez wyłączania hosta; pełny test
+autostartu wymaga jednak restartu Docker Desktop/WSL albo serwera i ponownego
+uruchomienia `./deploy/doctor.sh`.

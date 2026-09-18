@@ -15,12 +15,14 @@ import asyncio
 import datetime as dt
 import gzip
 import logging
+import os
 import subprocess
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import make_url
 
 from health_agent.db.models import BodyComposition, IngestState, NutritionDay, Workout
 from health_agent.db.session import get_session
@@ -162,14 +164,14 @@ def check_stale_sources() -> None:
         logger.exception("Nie udało się wysłać alertu o martwych źródłach")
 
 
-def backup_database() -> None:
-    """`docker compose exec db pg_dump ...` (nie lokalny `pg_dump` - nie ma
-    gwarancji, że jest zainstalowany na hoście w kompatybilnej wersji; sam
-    Postgres i tak żyje tylko w Dockerze, patrz docker-compose.yml) ->
-    gzip -> plik w `settings.backup_dir`. Czyści backupy starsze niż
-    `settings.backup_retention_days`, żeby katalog nie rósł bez końca."""
+def backup_database() -> Path | None:
+    """Wykonuje ``pg_dump`` bazy wskazanej przez ``DATABASE_URL``.
+
+    Obraz aplikacji zawiera klienta PostgreSQL. Dzięki temu backup działa
+    tak samo z Compose i z zewnętrzną bazą, bez dostępu do socketa Dockera.
+    """
     if not settings.backup_enabled:
-        return
+        return None
 
     backup_dir = Path(settings.backup_dir)
     if not backup_dir.is_absolute():
@@ -180,29 +182,56 @@ def backup_database() -> None:
     out_file = backup_dir / f"health_agent_{timestamp}.sql.gz"
 
     try:
+        database_url = make_url(settings.database_url)
+        if database_url.get_backend_name() != "postgresql":
+            raise ValueError("Backup obsługuje wyłącznie PostgreSQL")
+        if not database_url.host or not database_url.database or not database_url.username:
+            raise ValueError("DATABASE_URL musi zawierać host, użytkownika i nazwę bazy")
+
+        command = [
+            "pg_dump",
+            "--host",
+            database_url.host,
+            "--port",
+            str(database_url.port or 5432),
+            "--username",
+            database_url.username,
+            "--dbname",
+            database_url.database,
+            "--no-password",
+        ]
+        process_env = os.environ.copy()
+        if database_url.password:
+            process_env["PGPASSWORD"] = database_url.password
+        if sslmode := database_url.query.get("sslmode"):
+            process_env["PGSSLMODE"] = sslmode
+
         result = subprocess.run(
-            ["docker", "compose", "exec", "-T", "db", "pg_dump", "-U", "health_agent", "health_agent"],
-            cwd=_PROJECT_ROOT,
+            command,
+            env=process_env,
             capture_output=True,
             check=True,
         )
         with gzip.open(out_file, "wb") as f:
             f.write(result.stdout)
         logger.info("Backup bazy zapisany: %s (%d bajtów)", out_file, out_file.stat().st_size)
-    except subprocess.CalledProcessError:
-        logger.exception("Backup bazy nieudany (pg_dump)")
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        logger.error("Backup bazy nieudany (pg_dump): %s", stderr or f"kod {exc.returncode}")
         out_file.unlink(missing_ok=True)
-        return
+        return None
     except Exception:
         logger.exception("Backup bazy nieudany")
         out_file.unlink(missing_ok=True)
-        return
+        return None
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=settings.backup_retention_days)
     for old_file in backup_dir.glob("health_agent_*.sql.gz"):
         if dt.datetime.fromtimestamp(old_file.stat().st_mtime, tz=dt.timezone.utc) < cutoff:
             old_file.unlink(missing_ok=True)
             logger.info("Usunięto stary backup: %s", old_file)
+
+    return out_file
 
 
 def build_scheduler() -> BackgroundScheduler:
