@@ -196,6 +196,19 @@ git diff --check
 Testy w `tests/` używają standardowego `unittest`. Repo nie ma obecnie
 konfiguracji `pytest` ani CI. `scripts/test_*.py` to smoke testy integracji.
 
+Rozszerzony pakiet funkcji dashboard/zdjęcia/przypomnienia uruchamia własny,
+jednorazowy PostgreSQL 16, sprawdza współbieżność outboxa, recovery po błędach,
+sesje i mock Telegrama, a na końcu wykonuje prawdziwy backup i restore:
+
+```bash
+bash scripts/run_feature_integration_tests.sh
+```
+
+Skrypt wymaga działającego Dockera, używa wyłącznie danych syntetycznych i
+zatrzymuje testowy kontener przez `trap` również po nieudanym teście.
+Destrukcyjne cleanupy testów są dodatkowo blokowane, dopóki baza i użytkownik
+nie nazywają się `health_test` oraz runner nie poda jawnego tokenu testowego.
+
 `scripts/eval_agents.py` wymaga modeli i bazy, generuje koszt API,
 może zmieniać profil/wiedzę i czyści **całe `agent_runs`**. Uruchamiaj go
 wyłącznie z `DATABASE_URL` wskazującym osobną bazę testową z migracjami

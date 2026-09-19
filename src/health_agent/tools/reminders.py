@@ -543,6 +543,30 @@ def evaluate_due_occurrences(now: dt.datetime | None = None) -> dict:
     return {"queued": ready, "retrying": retried, "skipped": skipped}
 
 
+def _claim_notification(outbox_id: int, now: dt.datetime) -> tuple[dict, int] | None:
+    """Atomowo przejmij jeden pending outbox; najwyżej jeden proces wygrywa."""
+    with get_session() as session:
+        claimed = session.execute(
+            update(NotificationOutbox)
+            .where(
+                NotificationOutbox.id == outbox_id,
+                NotificationOutbox.status == "pending",
+            )
+            .values(
+                status="sending",
+                attempts=NotificationOutbox.attempts + 1,
+                available_at=now,
+            )
+            .returning(
+                NotificationOutbox.payload_json,
+                NotificationOutbox.occurrence_id,
+            )
+        ).one_or_none()
+        if claimed is None:
+            return None
+        return dict(claimed.payload_json), claimed.occurrence_id
+
+
 def dispatch_pending_notifications(now: dt.datetime | None = None) -> dict:
     """Wyślij outbox.
 
@@ -577,27 +601,10 @@ def dispatch_pending_notifications(now: dt.datetime | None = None) -> dict:
 
     sent = unknown = 0
     for outbox_id in ids:
-        with get_session() as session:
-            claimed = session.execute(
-                update(NotificationOutbox)
-                .where(
-                    NotificationOutbox.id == outbox_id,
-                    NotificationOutbox.status == "pending",
-                )
-                .values(
-                    status="sending",
-                    attempts=NotificationOutbox.attempts + 1,
-                    available_at=now,
-                )
-                .returning(
-                    NotificationOutbox.payload_json,
-                    NotificationOutbox.occurrence_id,
-                )
-            ).one_or_none()
-            if claimed is None:
-                continue
-            payload = dict(claimed.payload_json)
-            occurrence_id = claimed.occurrence_id
+        claimed = _claim_notification(outbox_id, now)
+        if claimed is None:
+            continue
+        payload, occurrence_id = claimed
         try:
             from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 

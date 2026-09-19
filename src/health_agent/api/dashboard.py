@@ -99,6 +99,7 @@ def _current_session(request: Request) -> DashboardSession:
     if not token:
         raise HTTPException(status_code=401, detail="Zaloguj się")
     now = dt.datetime.now(dt.timezone.utc)
+    authenticated = None
     with get_session() as session:
         row = session.execute(
             select(DashboardSession).where(
@@ -114,11 +115,16 @@ def _current_session(request: Request) -> DashboardSession:
         ):
             if row is not None:
                 row.revoked = True
-            raise HTTPException(status_code=401, detail="Sesja wygasła")
-        row.last_seen_at = now
-        session.flush()
-        session.expunge(row)
-        return row
+        else:
+            row.last_seen_at = now
+            session.flush()
+            session.expunge(row)
+            authenticated = row
+    if authenticated is None:
+        # Wyjątek dopiero po wyjściu z get_session: ewentualne revoked=True
+        # musi zostać zatwierdzone, a nie wycofane przez rollback context managera.
+        raise HTTPException(status_code=401, detail="Sesja wygasła")
+    return authenticated
 
 
 def _validate_mutation(request: Request, auth: DashboardSession) -> None:

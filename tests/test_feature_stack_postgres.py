@@ -40,13 +40,18 @@ from health_agent.tools.reminders import (
     propose_reminder_rule,
     update_reminder_rule,
 )
+from tests.postgres_guard import (
+    is_isolated_test_database,
+    require_isolated_test_database,
+)
 
 
-@unittest.skipUnless(settings.app_env == "test", "wymaga APP_ENV=test i osobnej bazy")
+@unittest.skipUnless(
+    is_isolated_test_database(), "wymaga jawnie potwierdzonej izolowanej bazy health_test"
+)
 class FeatureStackPostgresTest(unittest.TestCase):
     def tearDown(self) -> None:
-        if settings.app_env != "test":
-            raise RuntimeError("Odmowa czyszczenia poza APP_ENV=test")
+        require_isolated_test_database()
         with get_session() as session:
             session.execute(delete(NotificationOutbox))
             session.execute(delete(ReminderOccurrence))

@@ -63,6 +63,38 @@ class BackupDatabaseTest(unittest.TestCase):
             self.assertTrue(run.call_args.kwargs["capture_output"])
             self.assertTrue(run.call_args.kwargs["check"])
 
+    def test_partial_artifacts_are_removed_when_photo_archive_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            def partial_archive(path, *args, **kwargs):
+                Path(path).write_bytes(b"partial tar")
+                raise OSError("synthetic archive failure")
+
+            with (
+                patch.object(scheduler.settings, "database_url", "postgresql://u:p@db/x"),
+                patch.object(scheduler.settings, "backup_dir", tmp_dir),
+                patch.object(scheduler.settings, "backup_enabled", True),
+                patch.object(
+                    scheduler.settings,
+                    "progress_photos_dir",
+                    str(Path(tmp_dir) / "photos"),
+                ),
+                patch.object(
+                    scheduler.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(stdout=b"-- synthetic dump --"),
+                ),
+                patch.object(
+                    scheduler.tarfile,
+                    "open",
+                    side_effect=partial_archive,
+                ),
+            ):
+                result = scheduler.backup_database()
+
+            self.assertIsNone(result)
+            self.assertEqual(list(Path(tmp_dir).glob("health_agent_*.sql.gz")), [])
+            self.assertEqual(list(Path(tmp_dir).glob("health_agent_*.photos.tar.gz")), [])
+
 
 if __name__ == "__main__":
     unittest.main()
