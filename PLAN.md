@@ -1,4 +1,4 @@
-# Plan implementacji - kolejne funkcje (2026-09-18)
+# Plan implementacji - kolejne funkcje (2026-09-19)
 
 Kolejność wynika z zależności i z tego, co już nas ugryzło. Każdy punkt ma:
 cel, decyzje (rozstrzygnięte na podstawie sprawdzonych faktów), kroki,
@@ -36,6 +36,8 @@ Tailscale działa na hoście i obsługuje HTTPS przed lokalnym portem API.
 4. Backup używa `pg_dump` względem `DATABASE_URL`, bez socketa Dockera.
 5. `.env.example` jest pełnym szablonem wdrożeniowym; instalator generuje
    nowe hasło i sekret tylko przy nowej instalacji, nie zmienia istniejącej bazy.
+6. Środowiska są rozdzielone przez `APP_ENV` i `SCHEDULER_ENABLED`;
+   development ma osobnego bota Telegram i domyślnie nie uruchamia schedulera.
 
 **Weryfikacja automatyczna:** build i uruchomienie obrazu non-root z klientem
 PostgreSQL 16, parser Compose, składnia skryptów, kompilacja Pythona, CLI,
@@ -43,11 +45,9 @@ test jednostkowy backupu oraz izolowany test PostgreSQL 16: wszystkie migracje,
 syntetyczny rekord, prawdziwy `pg_dump`, restore i porównanie danych.
 
 **Weryfikacja operacyjna:** lokalne wdrożenie Compose przeszło diagnostykę,
-healthcheck przez Tailscale oraz kontrolowane awarie procesów API i bota;
-oba kontenery wróciły automatycznie dzięki polityce restartu. Do wykonania
-pozostaje restart całego Dockera/WSL lub VPS, webhook z telefonu i odpowiedź
-bota. Przed migracją wyłączyć starą instancję, aby nie dublować schedulera ani
-Telegram long polling.
+a wdrożenie VPS pełny restart hosta, automatyczny powrót kontenerów, HTTPS,
+webhook z telefonu i odpowiedź API. Lokalny scheduler i bot production są
+wyłączone. Przy równoległym development używać osobnego tokenu Telegrama.
 
 **Ryzyko:** WSL nie startuje bez Docker Desktop lub innego procesu. Jeżeli
 opcja „start at login” nie podnosi dystrybucji, użyć Harmonogramu zadań Windows
@@ -55,7 +55,7 @@ z `wsl.exe -d Ubuntu-24.04 -- true`.
 
 ---
 
-## 2. Pętla zwrotna 👍/👎 z Telegrama
+## 2. Pętla zwrotna 👍/👎 z Telegrama (WDROŻONE W KODZIE 2026-09-19)
 
 **Cel:** każda odpowiedź asystenta ma przypięty `agent_run` (korzeń
 drzewa); reakcja 👍/👎 pod wiadomością zapisuje ocenę; `health-agent
@@ -68,7 +68,7 @@ bota zaczynająca się od "👎"/"👍" albo "feedback:" zapisuje tekst do tej
 samej oceny.
 
 **Kroki:**
-1. Migracja: `conversations.telegram_message_id` (int, index),
+1. Migracja: `conversations.telegram_message_id` (bigint, index) + lista wszystkich części,
    `conversations.root_run_id` (FK agent_runs); tabela `feedback` (id,
    conversation_id, agent_run_id, rating -1/+1, comment, created_at).
 2. `run_agent` zwraca dziś tylko output - dodać sposób odczytu id korzenia:
@@ -76,7 +76,7 @@ samej oceny.
    `parent_run_id is None`; `ask_orchestrator_async` zwraca `(answer,
    root_run_id)` (albo nowa funkcja, żeby nie łamać CLI/eval).
 3. `telegram.py`: `_reply` zwraca `Message` (pierwszy chunk) -> zapis
-   `telegram_message_id` + `root_run_id` w wierszu asystenta.
+   `telegram_message_id(s)` + `root_run_id` w wierszu asystenta.
    `MessageReactionHandler(handle_reaction)`: z `update.message_reaction`
    bierze `message_id`, `new_reaction` (ReactionTypeEmoji: 👍/👎), szuka
    wiersza po `telegram_message_id`, upsert `feedback`. Reply-to z tekstem
@@ -84,7 +84,7 @@ samej oceny.
 4. CLI `health-agent feedback [--days 30] [--bad]`: lista ocen z
    pytaniem/odpowiedzią/agentem/narzędziami/kosztem; `--export plik.md` do
    przeglądu.
-5. Deterministyczne wykorzystanie: `check_stale_sources`-style job NIE -
+5. Dalsze wykorzystanie (jeszcze otwarte): `check_stale_sources`-style job NIE -
    zamiast tego `eval_agents.py feedback`: bierze ostatnie 👎, uruchamia te
    same pytania ponownie po zmianie promptu i pokazuje sędziego przed/po
    (regresja na realnych, nie syntetycznych pytaniach).
@@ -115,48 +115,39 @@ running, ale to i tak ~1 pytanie/tydz.
 
 ---
 
-## 4. `/sync` + dzisiejsze jedzenie z Fitatu
+## 4. `/sync` Intervals.icu (WDROŻONE W KODZIE 2026-09-19) i Fitatu (OTWARTE)
 
-**Cel:** "ile zjadłem dziś" działa zanim telefon zsynchronizuje Health
-Connect; `/sync` odświeża Intervals.icu + Fitatu na żądanie.
+**Cel części ukończonej:** ręczne odświeżenie treningów i wellness korzysta
+z dokładnie tego samego mechanizmu co scheduler, także gdy bot i API są
+osobnymi procesami.
 
-**Decyzje (kluczowe - dedup źródeł):** pozycje z API Fitatu to źródło
-TYMCZASOWE (`source="fitatu_api"`). Health Connect jest kanoniczne. Reguły:
-(a) ingest Fitatu dla dnia = usuń wszystkie `fitatu_api` z tego dnia,
-wstaw na nowo (cały dzień, nie upsert per pozycja - API daje pełny dzień);
-(b) ingest Health Connect dla dnia = usuń `fitatu_api` z tego dnia;
-(c) `_recompute_nutrition_day` sumuje TYLKO jedno źródło: healthconnect
-jeśli ma pozycje tego dnia, inaczej fitatu_api. Bez (c) dzień liczy się
-podwójnie w oknie między syncami - to ten sam typ błędu co duplikaty z
-15.09, tylko z dwóch źródeł.
+**Zrealizowane:**
+1. `ingest/sync.py` wyznacza wspólne okno catch-up: 3 dni, zakładka od
+   ostatniego udanego markera i limit 60 dni z ostrzeżeniem o obcięciu.
+2. Transakcyjna blokada advisory PostgreSQL nie pozwala schedulerowi i
+   Telegramowi wykonywać tego samego importu równolegle.
+3. Pobranie, zapis `raw_payloads`, upserty i przesunięcie markera są w jednej
+   transakcji. Błąd pozostawia poprzedni marker i wycofuje audyt oraz dane.
+4. Telegram `/sync` uruchamia kod synchroniczny przez `asyncio.to_thread`;
+   scheduler obsługuje zajętą blokadę jako bezpieczne pominięcie.
+5. Jawny zakres CLI używa tej samej blokady i transakcji, lecz nie przesuwa
+   markera automatycznego pollingu.
 
-**Kroki:**
-1. Settings: `FITATU_EMAIL`, `FITATU_PASSWORD`; `ingest/fitatu.py`:
-   klient z `login` + cache tokenu w `ingest_state`-podobnej tabelce lub
-   pliku w `secrets/` (token 60 min, refresh przez bibliotekę);
-   `fetch_day(date)` -> normalizacja (te same pola co HC: product, kcal,
-   protein_g, fat_g, carbs_g, fiber_g, sugar_g, salt_g; `meal` - tu JEST
-   typ posiłku, zapisać) -> reguła (a) -> recompute.
-2. `ingest/healthconnect.py`: reguła (b) przed upsertem pozycji dnia;
-   `_recompute_nutrition_day`: reguła (c).
-3. Narzędzie `refresh_today_nutrition()` dla nutrition (i przez ask_agent
-   dla innych): wołane tylko gdy pytanie dotyczy DZIŚ i `get_nutrition_day`
-   dziś jest puste/ubogie; zwraca podsumowanie + informację "z API Fitatu,
-   Health Connect nadpisze po syncu".
-4. Telegram `/sync`: Intervals (ostatnie 3 dni) + Fitatu (dziś, wczoraj)
-   + wynik jednym komunikatem; CLI `health-agent ingest fitatu --date`.
-5. `scripts/test_fitatu.py` -> logika do `ingest/fitatu.py`, skrypt
-   zostaje jako smoke test.
+**Weryfikacja:** testy jednostkowe okna i rejestracji narzędzi oraz izolowany
+PostgreSQL 16: wzajemne wykluczanie procesów, rollback po błędzie, atomowy
+marker i brak przesunięcia markera przez ręczny zakres.
 
-**Weryfikacja:** dzień bez HC: `/sync` -> nutrition_days z sumą z Fitatu;
-potem replay payloadu HC dla tego dnia -> fitatu_api znika, suma = HC;
-ponowny `/sync` tego samego dnia -> ta sama liczba pozycji (nie x2);
-`eval_agents.py nutrition` bez regresji + nowy test jednostkowy na (a)-(c)
-z syntetycznymi pozycjami.
+**Część otwarta - dzisiejsze jedzenie z Fitatu:** bezpośredni ingest pozostaje
+zablokowany przez brak działającego refresh flow. Przed implementacją trzeba
+rozstrzygnąć poświadczenia i ryzyko nieoficjalnego API. Health Connect pozostaje
+źródłem kanonicznym. Jeśli funkcja powstanie, wpisy `source="fitatu_api"` mają
+być tymczasowe: pełne zastąpienie dnia z Fitatu, usunięcie po nadejściu Health
+Connect i agregowanie tylko jednego źródła, aby nie liczyć dnia podwójnie.
 
-**Ryzyko:** nieoficjalne API (ToS, patrz README pkt 9) - używać tylko na
-żądanie, z nagłówkami jak przeglądarka (już zrobione w skrypcie), nigdy w
-schedulerze. Hasło w `.env` - ten sam poziom co dziś token.
+**Plan Fitatu po odblokowaniu:** przenieść klienta ze `scripts/test_fitatu.py`
+do `ingest/fitatu.py`, dodać bezpieczny cache/refresh tokenu, normalizację
+dnia, `refresh_today_nutrition()` i CLI. Nie dodawać Fitatu do schedulera;
+wywoływać tylko na żądanie.
 
 ---
 
@@ -205,23 +196,21 @@ przed włączeniem joba.
 
 ---
 
-## 6. Tygodniowe podsumowanie (niedziela wieczorem)
+## 6. Dzienne i tygodniowe podsumowania (WDROŻONE W KODZIE 2026-09-19)
 
-**Cel:** jedna wiadomość: km/obciążenie i forma, regeneracja, dieta i
+**Cel:** dzienny raport bieżącego dnia oraz tygodniowa wiadomość: km/obciążenie i forma, regeneracja, dieta i
 bilans, waga - co poszło dobrze, co poprawić, jedna rzecz na następny
-tydzień. Bez dziennego szumu (odrzucony).
+tydzień. Raport dzienny wrócił decyzją użytkownika 2026-09-19 i jest opcjonalny.
 
 **Decyzja:** 4 specjalistów równolegle (`asyncio.gather`) z tym samym
 pytaniem-szablonem ("Podsumuj tydzień pon-nd: 3-4 liczby, 1 zdanie oceny
 względem poprzedniego tygodnia, 1 rekomendacja") - bez orchestratora
 (delegowałby do jednego). Modele wg configu (running Sonnet/Haiku po pkt
-3). Sklejone z nagłówkami, do 2 wiadomości Telegram. Zapis jako
-`Conversation(agent="weekly")`, żeby "a dlaczego waga?" miało kontekst.
+3). Sklejone deterministycznie z nagłówkami i dzielone zgodnie z limitem Telegrama. Zapis jako `Conversation(agent="daily"|"weekly")`, żeby kolejne pytanie miało kontekst.
 
-**Kroki:** `agents/weekly.py` (`build_weekly_summary()`), job cron
+**Zrealizowane:** `agents/summaries.py` (`build_daily_summary`, `build_weekly_summary`), komendy Telegram `/daily` i `/weekly`, CLI `health-agent daily|weekly`, wspólny root run do feedbacku oraz joby cron
 `day_of_week=sun, hour=20` w strefie Europe/Warsaw (scheduler jest UTC -
-podać `timezone` w triggerze), settings `WEEKLY_SUMMARY_ENABLED/DAY/HOUR`,
-CLI `health-agent weekly` (podgląd bez wysyłki), reguła w promptach
+podać `timezone` w triggerze), settings `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*` i `SUMMARY_TIMEZONE`; automatyczna wysyłka jest domyślnie wyłączona. Reguła w promptach
 "tryb podsumowania: bez ❓, bez ofert pogłębienia".
 
 **Weryfikacja:** CLI generuje 4 sekcje z liczbami z narzędzi (sprawdzić 2
@@ -234,11 +223,11 @@ $0.10-0.15).
 
 ## Zależności i kolejność
 
-1 (autostart) -> 2 (feedback; migracja `conversations`) -> 3 (Haiku;
-niezależne, trywialne) -> 4 (`/sync`; niezależne) -> 5 (korelacje) -> 6
-(tygodniowe; korzysta z lekcji z 5 przez digest). 3 i 4 można wcisnąć w
-dowolnym miejscu. Po każdym punkcie: `eval_agents.py` (core + dotknięty
-zestaw), commit.
+Punkty 1, 2, część Intervals z 4 oraz 6 są gotowe. Następny samodzielny krok
+to 5 (korelacje); punkt 3 (Haiku) jest niezależnym eksperymentem płatnym.
+Część Fitatu z 4 pozostaje zablokowana przez poświadczenia i decyzję o
+nieoficjalnym API. Po zmianach promptów/modeli: odpowiedni `eval_agents.py`
+na osobnej bazie testowej, następnie commit.
 
 ---
 
@@ -270,13 +259,13 @@ jeden plik HTML, wykresy z danych przez `GET /api/series?metric=...`
 (waga 7d, HRV z bazą, km/tydz., bilans, zdjęcia obok siebie). Bez
 frameworka; odświeżanie ręczne.
 
-**Backup poza dyskiem PC:** najtańsze bez nowej infrastruktury - po
-`backup_database` skopiować plik do katalogu synchronizowanego przez
-Windows (OneDrive/Google Drive pod `/mnt/c/Users/.../`), ścieżka w
-settings `BACKUP_MIRROR_DIR`. Alternatywa: `scp` na drugi node Tailscale.
+**Backup poza VPS:** po `backup_database` kopiować zaszyfrowany dump do
+prywatnego storage'u obiektowego przez `restic`/`rclone` albo przez `scp`
+na drugi node Tailscale. Poświadczenia trzymać poza repo; monitorować ostatnią
+udaną kopię i okresowo sprawdzać restore.
 
-**VPS/RPi (Faza 6):** `Dockerfile` (uv, non-root), usługi `api` i `bot` w
-compose z `restart: unless-stopped`, `secrets/` jako volume, Tailscale na
-hoście, migracja bazy `pg_dump | psql`, zmiana URL w apce Health Connect
-Webhook. Unity z pkt 1 przestają być potrzebne - dlatego pkt 1 celowo nie
-wchodzi w Dockerfile.
+**VPS (Faza 6, WDROŻONE):** `Dockerfile` (uv, non-root), usługi `api` i
+`bot` w Compose z `restart: unless-stopped`, reverse proxy HTTPS, webhook
+i autostart działają. Szczegóły hosta i procedura operacyjna są w ignorowanym
+`VPS_LOCAL.md`; repozytorium zawiera przenośne `deploy/install.sh`,
+`deploy/update.sh` i `deploy/doctor.sh`.

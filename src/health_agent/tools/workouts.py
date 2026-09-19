@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from health_agent.db.models import Workout
 from health_agent.db.session import get_session
+from health_agent.time_utils import utc_day_bounds
 
 
 class WorkoutSummary(BaseModel):
@@ -70,8 +71,7 @@ def get_workouts_on_date(date: dt.date, sport: str | None = None) -> list[Workou
     najpierw na konkretną datę używając dzisiejszej daty z promptu). Użyj
     tego zamiast get_workouts(days=N) dla pytań o konkretny dzień - nie
     zgaduj liczby dni wstecz, to zawodne."""
-    start = dt.datetime.combine(date, dt.time.min, tzinfo=dt.timezone.utc)
-    end = start + dt.timedelta(days=1)
+    start, end = utc_day_bounds(date)
     with get_session() as session:
         stmt = select(Workout).where(Workout.started_at >= start, Workout.started_at < end).order_by(Workout.started_at)
         if sport:

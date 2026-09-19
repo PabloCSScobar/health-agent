@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from health_agent.db.models import BodyComposition
 from health_agent.db.session import get_session
+from health_agent.time_utils import local_date, local_today, utc_day_bounds
 
 
 class BodyCompositionPoint(BaseModel):
@@ -34,7 +35,7 @@ def get_body_composition_latest() -> BodyCompositionPoint | None:
 
 
 def get_body_composition_trend(days: int = 30) -> list[BodyCompositionPoint]:
-    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    since, _ = utc_day_bounds(local_today() - dt.timedelta(days=days))
     with get_session() as session:
         rows = session.execute(
             select(BodyComposition).where(BodyComposition.measured_at >= since).order_by(BodyComposition.measured_at)
@@ -72,7 +73,7 @@ def get_body_trend(days: int = 30) -> dict:
     obserwowanej zmiany z OCZEKIWANĄ z bilansu energetycznego (7700 kcal ≈
     1 kg). Pole `data_sufficiency` mówi wprost, czy to już trend, czy
     dopiero pojedyncze punkty - nie wyciągaj wniosków z 2 pomiarów."""
-    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    since, _ = utc_day_bounds(local_today() - dt.timedelta(days=days))
     with get_session() as session:
         rows = session.execute(
             select(BodyComposition).where(BodyComposition.measured_at >= since, BodyComposition.weight_kg.isnot(None)).order_by(BodyComposition.measured_at)
@@ -80,12 +81,12 @@ def get_body_trend(days: int = 30) -> dict:
         session.expunge_all()
     by_day: dict[dt.date, BodyComposition] = {}
     for r in rows:
-        by_day[r.measured_at.date()] = r  # ostatni pomiar dnia wygrywa
+        by_day[local_date(r.measured_at)] = r  # ostatni pomiar dnia wygrywa
     pts = [by_day[d] for d in sorted(by_day)]
     if not pts:
         return {"days": days, "points": 0, "data_sufficiency": "brak pomiarów w tym okresie"}
 
-    weights = [(p.measured_at.date(), p.weight_kg) for p in pts]
+    weights = [(local_date(p.measured_at), p.weight_kg) for p in pts]
     first_day = weights[0][0]
     span = (weights[-1][0] - first_day).days
     slope = None

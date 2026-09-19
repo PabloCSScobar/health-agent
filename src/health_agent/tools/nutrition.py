@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from health_agent.db.models import NutritionDay, NutritionItem
 from health_agent.db.session import get_session
+from health_agent.time_utils import local_today
 
 
 class NutritionDaySummary(BaseModel):
@@ -78,7 +79,7 @@ def get_nutrition_summary(days: int = 7) -> dict:
     UWAGA: dni bez wpisów to brak danych (użytkownik nie logował), nie 0
     kcal - `days_with_data` mówi, ile dni naprawdę masz; przy <5 dniach nie
     wyciągaj wniosków o "nawykach"."""
-    since = dt.date.today() - dt.timedelta(days=days - 1)
+    since = local_today() - dt.timedelta(days=days - 1)
     with get_session() as session:
         rows = session.execute(
             select(NutritionDay).where(NutritionDay.date >= since, NutritionDay.kcal.isnot(None)).order_by(NutritionDay.date)
@@ -99,7 +100,7 @@ def get_nutrition_summary(days: int = 7) -> dict:
     def avg(key):
         return round(statistics.mean(r[key] for r in day_rows))
 
-    weight = _latest_weight(dt.date.today())
+    weight = _latest_weight(local_today())
     kcal_goal, protein_goal = _profile_number("cel_kcal_dzien"), _profile_number("cel_bialko_g_dzien")
     protein_avg = avg("protein_g")
     kcal_avg = avg("kcal")
@@ -137,7 +138,7 @@ def get_energy_balance(days: int = 7, end_date: dt.date | None = None) -> dict:
     tłuszczowej - orientacyjnie). To narzędzie odpowiada na "jaki mam
     deficyt" BEZ pytania recovery. Jeśli `missing` niepuste - szacunek
     jest niepełny, powiedz użytkownikowi, co uzupełnić w profilu."""
-    end = end_date or dt.date.today()
+    end = end_date or local_today()
     since = end - dt.timedelta(days=days - 1)
     with get_session() as session:
         intake = {d.date: d.kcal for d in session.execute(select(NutritionDay).where(NutritionDay.date >= since, NutritionDay.date <= end, NutritionDay.kcal.isnot(None))).scalars().all()}
@@ -172,7 +173,7 @@ def find_foods(query: str | None = None, days: int = 14, sort_by: str = "kcal") 
     'protein_g' | 'fat_g' | 'carbs_g' | 'sugar_g'), zagregowane po nazwie
     (ile razy, suma, średnia porcja). Do pytań "co jem najwięcej", "skąd
     mam tyle tłuszczu", "co jadłem bogatego w białko", "czy jadłem X"."""
-    since = dt.date.today() - dt.timedelta(days=days - 1)
+    since = local_today() - dt.timedelta(days=days - 1)
     col = {"kcal": NutritionItem.kcal, "protein_g": NutritionItem.protein_g, "fat_g": NutritionItem.fat_g, "carbs_g": NutritionItem.carbs_g, "sugar_g": NutritionItem.sugar_g}.get(sort_by, NutritionItem.kcal)
     with get_session() as session:
         stmt = (

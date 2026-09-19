@@ -2,7 +2,8 @@
 
 Ten katalog obsługuje ten sam wariant Docker Compose na WSL i VPS. Docker
 zarządza autostartem bazy, API i bota przez `restart: unless-stopped`.
-API ma dokładnie jeden worker, ponieważ w jego procesie działa scheduler.
+API ma dokładnie jeden worker; na production działa w nim scheduler, a na
+development scheduler jest domyślnie wyłączony.
 
 ## Nowa instalacja
 
@@ -12,12 +13,26 @@ Tailscale; port API jest publikowany wyłącznie na `127.0.0.1`.
 ```bash
 git clone <adres-repozytorium> health_agent
 cd health_agent
-./deploy/install.sh
+./deploy/install.sh production  # VPS
+# ./deploy/install.sh            # lokalny development
 ```
 
-Pierwsze wywołanie tworzy `.env`, generuje hasło bazy oraz sekret webhooka
-i zatrzymuje się, aby można było wpisać tokeny. Po uzupełnieniu pliku uruchom
-skrypt ponownie. Sekretów nie należy commitować ani wklejać do logów.
+Pierwsze wywołanie tworzy `.env`, zapisuje `APP_ENV` i stan schedulera,
+generuje hasło bazy oraz sekret webhooka i zatrzymuje się, aby można było
+wpisać tokeny. Po uzupełnieniu pliku uruchom skrypt ponownie; bez argumentu
+zachowa tryb zapisany w `.env`. Sekretów nie należy commitować ani wklejać
+do logów.
+
+Development i production muszą używać osobnych `TELEGRAM_BOT_TOKEN`, gdy
+oba boty mogą działać równocześnie. Ten sam `TELEGRAM_CHAT_ID` jest dozwolony,
+ale osobny prywatny czat z botem dev ułatwia rozpoznanie środowiska. Telefon
+powinien wysyłać właściwy webhook tylko do production.
+
+Przed pierwszym uruchomieniem po aktualizacji starszej instalacji uzupełnij
+brakujące `APP_ENV` i `SCHEDULER_ENABLED`. Lokalnie najpierw zastąp token
+production tokenem osobnego bota dev, ustaw `development/false`, a dopiero
+potem uruchom Compose. Na VPS ustaw `production/true`. Instalator nie zgaduje
+trybu istniejącego `.env`, jeśli brakuje w nim `APP_ENV`.
 
 Dla Tailscale można wystawić lokalne API poleceniem wykonywanym na hoście:
 
@@ -73,7 +88,8 @@ VPS pozostaje wymagany.
 
 ## Autostart
 
-Na VPS włącz usługę Docker przy starcie systemu:
+Na VPS ustaw `APP_ENV=production` i `SCHEDULER_ENABLED=true` (robi to
+`./deploy/install.sh production`) oraz włącz usługę Docker przy starcie:
 
 ```bash
 sudo systemctl enable --now docker

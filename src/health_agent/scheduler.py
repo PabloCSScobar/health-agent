@@ -1,12 +1,9 @@
 """Automatyczny, cykliczny polling źródeł danych - działa w tle w tym samym
 procesie co serwer FastAPI (patrz api/app.py, lifespan startup/shutdown).
 
-Ręczne pobranie danych (przez użytkownika z CLI, albo w przyszłości przez
-narzędzie agenta) nie jest tu duplikowane - i scheduler, i CLI, i przyszłe
-narzędzie agenta wywołują dokładnie tę samą funkcję `ingest_range` z
-`ingest/intervals.py`. Dzięki idempotentnym upsertom bezpiecznie mogą się
-zazębiać (np. ręczne pobranie w trakcie oczekiwania na kolejny cykl
-schedulera nie zepsuje niczego).
+Scheduler, Telegram `/sync` i CLI używają wspólnego `sync_intervals`.
+Automatyczny catch-up i marker są atomowe, a advisory lock PostgreSQL zapobiega
+równoległemu importowi przez osobne procesy API i bota.
 """
 
 from __future__ import annotations
@@ -21,12 +18,11 @@ from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import make_url
 
-from health_agent.db.models import BodyComposition, IngestState, NutritionDay, Workout
+from health_agent.db.models import BodyComposition, NutritionDay, Workout
 from health_agent.db.session import get_session
-from health_agent.ingest.intervals import ingest_range
+from health_agent.ingest.sync import sync_intervals
 from health_agent.settings import settings
 from health_agent.tools.memory import recall_all, remember
 
@@ -34,83 +30,106 @@ logger = logging.getLogger("health_agent.scheduler")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Okno "do tyłu" przy każdym cyklu - nie tylko "dziś", bo Intervals.icu
-# potrafi doliczać/poprawiać dane (np. ctl/atl, spóźniona synchronizacja
-# zegarka) także dla ostatnich kilku dni, nie tylko bieżącego.
-POLL_LOOKBACK_DAYS = 3
-POLL_MAX_BACKFILL_DAYS = 60  # bezpiecznik - dłuższa przerwa niż to wymaga ręcznego `health-agent ingest intervals --since`
 POLL_INTERVAL_MINUTES = 60
-_INGEST_SOURCE = "intervals_icu"
-
-
-def _last_synced_date(session, source: str) -> dt.date | None:
-    row = session.get(IngestState, source)
-    return row.last_synced_date if row else None
-
-
-def _mark_synced(session, source: str, date: dt.date) -> None:
-    stmt = (
-        pg_insert(IngestState)
-        .values(source=source, last_synced_date=date)
-        .on_conflict_do_update(index_elements=["source"], set_={"last_synced_date": date})
-    )
-    session.execute(stmt)
 
 
 def poll_intervals_icu() -> None:
-    """Okno pobierania liczone OD OSTATNIEGO UDANEGO SYNCU, nie od stałych
-    N dni wstecz - złapane na żywo: serwer stał ~16h po restarcie WSL, przy
-    stałym oknie 3 dni nic by się nie zgubiło tym razem, ale przy dłuższej
-    przerwie (>3 dni) luka nigdy nie zostałaby dociągnięta automatycznie.
-    Teraz: `oldest` = min(dziś - POLL_LOOKBACK_DAYS, ostatni sync - 1 dzień
-    zakładki), ograniczone z dołu przez POLL_MAX_BACKFILL_DAYS (dłuższa
-    przerwa = ręczny `ingest intervals --since`, żeby nie ciągnąć
-    bezterminowo przy np. skasowanym stanie)."""
-    newest = dt.date.today()
-    with get_session() as session:
-        last_synced = _last_synced_date(session, _INGEST_SOURCE)
-    default_oldest = newest - dt.timedelta(days=POLL_LOOKBACK_DAYS)
-    if last_synced is None:
-        oldest = default_oldest
-    else:
-        oldest = min(default_oldest, last_synced - dt.timedelta(days=1))
-    floor = newest - dt.timedelta(days=POLL_MAX_BACKFILL_DAYS)
-    if oldest < floor:
-        logger.warning(
-            "Luka w danych Intervals.icu większa niż %d dni (ostatni sync: %s) - "
-            "pobieram tylko od %s, resztę dociągnij ręcznie: "
-            "`uv run health-agent ingest intervals --since <data>`",
-            POLL_MAX_BACKFILL_DAYS, last_synced, floor,
-        )
-        oldest = floor
-
+    """Uruchom wspólny catch-up; błąd jednego cyklu nie zatrzymuje schedulera."""
     try:
-        with get_session() as session:
-            summary = ingest_range(session, oldest, newest)
-            _mark_synced(session, _INGEST_SOURCE, newest)
-        logger.info("Intervals.icu poll OK (od %s): %s", oldest, summary)
+        result = sync_intervals()
+        if result.status == "busy":
+            logger.info("Intervals.icu poll pominięty: inna synchronizacja już trwa")
+            return
+        if result.truncated:
+            logger.warning(
+                "Synchronizacja ograniczona do %s–%s; starszą lukę uzupełnij ręcznie",
+                result.oldest, result.newest,
+            )
+        logger.info(
+            "Intervals.icu poll OK (%s–%s): workouts=%d wellness_days=%d",
+            result.oldest, result.newest, result.workouts, result.wellness_days,
+        )
     except Exception:
-        # Świadomie łapiemy wszystko i tylko logujemy - błąd jednego cyklu
-        # (np. chwilowy problem sieciowy) nie może ubić całego schedulera,
-        # kolejny cykl i tak spróbuje ponownie za POLL_INTERVAL_MINUTES.
-        # `_mark_synced` NIE woła się przy wyjątku - luka zostaje widoczna
-        # i następny cykl spróbuje ją dociągnąć ponownie, zamiast po cichu
-        # przeskoczyć dzień, który się nie udał.
         logger.exception("Intervals.icu poll nieudany")
 
 
-def _send_telegram_message(text: str) -> None:
+def _send_telegram_message(text: str, conversation_id: int | None = None) -> list[int]:
+    """Wyślij tekst w bezpiecznych kawałkach; zwróć wszystkie message_id."""
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        logger.warning("Brak TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID - alert NIE wysłany: %s", text)
-        return
+        logger.warning("Brak TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID - wiadomość NIE wysłana")
+        return []
     from telegram import Bot
+    from health_agent.channels.telegram import _chunks, _update_conversation_messages
 
-    async def _send() -> None:
+    async def _send() -> list[int]:
         bot = Bot(token=settings.telegram_bot_token)
-        await bot.send_message(chat_id=settings.telegram_chat_id, text=text)
+        message_ids = []
+        for chunk in _chunks(text):
+            message = await bot.send_message(chat_id=settings.telegram_chat_id, text=chunk)
+            message_ids.append(message.message_id)
+            if conversation_id is not None:
+                _update_conversation_messages(conversation_id, message_ids)
+        return message_ids
 
-    asyncio.run(_send())
+    return asyncio.run(_send())
 
+
+def _summary_local_date() -> dt.date:
+    from zoneinfo import ZoneInfo
+
+    return dt.datetime.now(ZoneInfo(settings.summary_timezone)).date()
+
+
+def _send_summary(period: str) -> None:
+    """Wygeneruj, wyślij i zapisz raport raz na okres w pojedynczym schedulerze.
+
+    Marker powstaje po potwierdzonej wysyłce: chwilowa awaria może więc dać
+    duplikat przy ręcznym retry, ale nie zgubi raportu przed wysłaniem.
+    """
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        logger.warning("Brak TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID - podsumowanie NIE wysłane")
+        return
+
+    today = _summary_local_date()
+    dedupe_key = today.isoformat() if period == "daily" else (today - dt.timedelta(days=today.weekday())).isoformat()
+    memory_key = f"{period}_summary"
+    if recall_all("system_summaries").get(memory_key) == dedupe_key:
+        logger.info("Podsumowanie %s za %s było już wysłane", period, dedupe_key)
+        return
+
+    from health_agent.agents.summaries import build_daily_summary, build_weekly_summary
+
+    conversation_id = None
+    try:
+        result = asyncio.run(build_daily_summary(today) if period == "daily" else build_weekly_summary(today))
+        from health_agent.channels.telegram import (
+            _create_assistant_conversation,
+            _delete_conversation_if_unsent,
+        )
+
+        conversation_id = _create_assistant_conversation(
+            str(settings.telegram_chat_id), result.text, period, result.root_run_id
+        )
+        message_ids = _send_telegram_message(result.text, conversation_id)
+        if not message_ids:
+            _delete_conversation_if_unsent(conversation_id)
+            return
+        remember("system_summaries", memory_key, dedupe_key)
+        logger.info("Podsumowanie %s za %s wysłane", period, dedupe_key)
+    except Exception:
+        if conversation_id is not None:
+            from health_agent.channels.telegram import _delete_conversation_if_unsent
+
+            _delete_conversation_if_unsent(conversation_id)
+        logger.exception("Nie udało się wygenerować lub wysłać podsumowania %s", period)
+
+
+def send_daily_summary() -> None:
+    _send_summary("daily")
+
+
+def send_weekly_summary() -> None:
+    _send_summary("weekly")
 
 def check_stale_sources() -> None:
     """Alert na Telegram, jeśli któreś źródło nie zsynchronizowało się od
@@ -257,5 +276,30 @@ def build_scheduler() -> BackgroundScheduler:
             hours=settings.backup_interval_hours,
             next_run_time=dt.datetime.now(dt.timezone.utc),  # od razu przy starcie, żeby nie czekać cały cykl na pierwszy backup
             id="backup_database",
+        )
+    if settings.daily_summary_enabled:
+        scheduler.add_job(
+            send_daily_summary,
+            "cron",
+            hour=settings.daily_summary_hour,
+            minute=settings.daily_summary_minute,
+            timezone=settings.summary_timezone,
+            id="daily_summary",
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+    if settings.weekly_summary_enabled:
+        scheduler.add_job(
+            send_weekly_summary,
+            "cron",
+            day_of_week=settings.weekly_summary_day,
+            hour=settings.weekly_summary_hour,
+            minute=settings.weekly_summary_minute,
+            timezone=settings.summary_timezone,
+            id="weekly_summary",
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
         )
     return scheduler

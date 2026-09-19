@@ -16,10 +16,15 @@ Wspólne dla Codex i Claude Code (import przez `CLAUDE.md`).
 - Linux/WSL, Python >=3.12, `uv`, PostgreSQL 16 w Docker Compose. Komendy wykonuj z katalogu głównego repo w WSL; z Windows: `wsl.exe -d Ubuntu-24.04 --cd /home/<uzytkownik>/health-agent -- <komenda>`.
 - Korzystaj z `uv` i `uv.lock`; nie zastępuj środowiska WSL windowsowym `.venv` i nie aktualizuj zależności przy okazji innego zadania.
 - Szybka kontrola: `uv run --frozen --no-sync python -m compileall -q src scripts alembic` i `uv run --frozen --no-sync health-agent --help` (wymagają istniejących zależności).
-- Nie ma wydzielonego zestawu `pytest` ani CI w repo. Skrypty `scripts/test_*.py` są integracyjne; sprawdź ich wejście i skutki uboczne przed uruchomieniem.
+- Testy jednostkowe uruchamiaj przez `python -m unittest discover -s tests`;
+  repo nie ma konfiguracji `pytest` ani CI. Skrypty `scripts/test_*.py` są
+  integracyjne; sprawdź ich wejście i skutki uboczne przed uruchomieniem.
 - `scripts/eval_agents.py` wywołuje modele, zapisuje dane i USUWA CAŁĄ tabelę `agent_runs`. Używaj wyłącznie osobnej bazy testowej przez `DATABASE_URL`, z migracjami i danymi syntetycznymi. Tryb `all` uruchamia obecnie tylko core + running; coaches i import uruchamiaj osobno.
 - Zmiany promptów, routingu, modeli i narzędzi weryfikuj odpowiednimi zestawami eval na bazie testowej; obliczenia/dedup także deterministycznymi przypadkami. Podaj wykonane kontrole i niewykonane testy wraz z powodem.
-- Start API uruchamia polling Intervals.icu i domyślnie backup od razu, później także alerty. Nie uruchamiaj drugiego API/schedulera ani bota do sprawdzenia importu. Nie używaj wielu workerów API przy obecnym schedulerze.
+- Start API uruchamia zadania okresowe tylko przy `SCHEDULER_ENABLED=true`;
+  wtedy polling i domyślny backup wykonują się od razu, później także alerty.
+  Nie uruchamiaj drugiego aktywnego schedulera ani bota z tokenem production
+  do sprawdzenia importu. Nie używaj wielu workerów API przy schedulerze.
 
 ## Reguły implementacji
 
@@ -28,9 +33,9 @@ Wspólne dla Codex i Claude Code (import przez `CLAUDE.md`).
 - Zmiany schematu: modele SQLAlchemy + nowa migracja Alembic. Nie zmieniaj zastosowanych migracji; weryfikuj na osobnej bazie.
 - W działającej pętli asyncio używaj `await`; wejście synchroniczne jest dla CLI. Konsultacja specjalistów pozostaje ograniczona przez leaf agent bez `ask_agent`.
 - Modele konfiguruje `config/agents.yaml`, metodologia jest w `src/health_agent/prompts/`, wspólny kontrakt i routing w `src/health_agent/agents/registry.py`.
-- Rozróżniaj profil (`agent_memory`, `user_profile`), wiedzę (`knowledge`) i oryginały notatek (`documents`). `agent_memory` służy też do deduplikacji alertów.
+- Rozróżniaj profil (`agent_memory`, `user_profile`), wiedzę (`knowledge`) i oryginały notatek (`documents`). `agent_memory` służy też do deduplikacji alertów i automatycznych podsumowań.
 - Nie odczytuj ani nie wypisuj `.env`, `secrets/`, backupów i rzeczywistych danych zdrowotnych bez potrzeby wynikającej z zadania. Do dokumentacji/testów używaj syntetycznych przykładów; nie commituj sekretów ani danych użytkownika.
-- Utrzymuj decyzję użytkownika: planowane zdjęcia sylwetki służą archiwum i porównaniu, nie analizie przez model ani wysyłce do API LLM. Dzienne raporty zostały odrzucone; tygodniowe są w backlogu.
+- Utrzymuj decyzję użytkownika: planowane zdjęcia sylwetki służą archiwum i porównaniu, nie analizie przez model ani wysyłce do API LLM. Raporty dzienne i tygodniowe są opcjonalne i domyślnie wyłączone; decyzję o raportach dziennych użytkownik zmienił 2026-09-19.
 
 ## Utrzymywanie kontekstu i przekazanie pracy
 

@@ -4,6 +4,10 @@ x-app: &app
     - .env
   environment:
     DATABASE_URL: postgresql+psycopg://health_agent:${POSTGRES_PASSWORD:?Ustaw POSTGRES_PASSWORD w .env}@db:5432/health_agent
+    # Kompatybilność istniejących wdrożeń bez nowych kluczy w .env.
+    # Nowy lokalny .env.example ustawia jawnie development/false.
+    APP_ENV: ${APP_ENV:-production}
+    SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
   volumes:
     - health_agent_backups:/app/backups
   init: true

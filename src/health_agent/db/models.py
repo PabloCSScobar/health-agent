@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -241,12 +241,20 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    __table_args__ = (
+        UniqueConstraint("chat_id", "telegram_message_id", name="uq_conversations_chat_message"),
+    )
     chat_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16))  # user | assistant
     content: Mapped[str] = mapped_column(String)
     agent: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    telegram_message_ids: Mapped[list | None] = mapped_column(JSON)
+    root_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
@@ -263,3 +271,30 @@ class AgentRun(Base):
     # Nazwy narzędzi wywołanych w tym biegu, w kolejności (bez argumentów) -
     # do eval_agents.py ("czy running użył analyze_run?") i debugowania.
     tools_called: Mapped[list | None] = mapped_column(JSON)
+
+
+class Feedback(Base):
+    """Ocena odpowiedzi wysłanej na Telegramie.
+
+    Jeden wiersz na wiadomość asystenta; zmiana reakcji aktualizuje ocenę,
+    zamiast dopisywać kolejną. ``agent_run_id`` jest opcjonalne dla
+    deterministycznych odpowiedzi bez wywołania modelu.
+    """
+
+    __tablename__ = "feedback"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", name="uq_feedback_conversation"),
+        CheckConstraint("rating IN (-1, 1)", name="ck_feedback_rating"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    rating: Mapped[int] = mapped_column(Integer)
+    comment: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

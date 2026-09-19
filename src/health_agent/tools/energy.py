@@ -21,6 +21,7 @@ from sqlalchemy import select
 from health_agent.db.models import BodyComposition, DailyActivity, NutritionDay, Workout
 from health_agent.db.session import get_session
 from health_agent.tools.profile import _profile_number, get_user_profile
+from health_agent.time_utils import utc_day_bounds
 
 KCAL_PER_STEP_PER_KG = 0.00052  # ~0.045 kcal/krok przy 88 kg; marsz 4-5 km/h
 RUN_STEPS_PER_KM = 1100  # przy ~165 spm i 6:30/km; do odjęcia kroków z biegu od NEAT
@@ -35,7 +36,7 @@ def _latest_weight(on_or_before: dt.date) -> float | None:
     with get_session() as session:
         row = session.execute(
             select(BodyComposition)
-            .where(BodyComposition.weight_kg.isnot(None), BodyComposition.measured_at < dt.datetime.combine(on_or_before + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc))
+            .where(BodyComposition.weight_kg.isnot(None), BodyComposition.measured_at < utc_day_bounds(on_or_before)[1])
             .order_by(BodyComposition.measured_at.desc())
             .limit(1)
         ).scalar_one_or_none()
@@ -53,9 +54,9 @@ def estimate_daily_expenditure(date: dt.date) -> dict:
         manual = next((a.calories_total for a in acts if a.source == "manual" and a.calories_total), None)
         hc = next((a.calories_total for a in acts if a.source == "healthconnect" and a.calories_total), None)
         steps = max((a.steps or 0) for a in acts) if acts else 0
-        start = dt.datetime.combine(date, dt.time.min, tzinfo=dt.timezone.utc)
+        start, end = utc_day_bounds(date)
         workouts = session.execute(
-            select(Workout).where(Workout.started_at >= start, Workout.started_at < start + dt.timedelta(days=1))
+            select(Workout).where(Workout.started_at >= start, Workout.started_at < end)
         ).scalars().all()
         workout_kcal = sum((w.calories or 0) for w in workouts)
         run_km = sum((w.distance_m or 0) for w in workouts if w.sport in ("Run", "VirtualRun", "TrailRun")) / 1000

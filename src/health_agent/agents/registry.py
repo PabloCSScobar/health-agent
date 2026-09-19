@@ -14,10 +14,10 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from health_agent.agents.base import build_agent, run_agent, run_agent_sync
+from health_agent.agents.base import build_agent, run_agent, run_agent_sync, run_agent_with_id
 from health_agent.tools.body import get_body_composition_latest, get_body_composition_trend, get_body_trend
 from health_agent.tools.energy import estimate_daily_expenditure
-from health_agent.tools.manual import log_manual_entry
+from health_agent.tools.manual_batch import log_manual_entries
 from health_agent.tools.knowledge import add_knowledge, get_knowledge, knowledge_digest, list_documents, read_document, set_knowledge_active
 from health_agent.tools.nutrition import (
     find_foods,
@@ -33,7 +33,12 @@ from health_agent.tools.profile import (
     profile_prompt_block,
     set_user_profile_facts,
 )
-from health_agent.tools.recovery import get_recovery_baseline, get_recovery_day, get_recovery_range
+from health_agent.tools.recovery import (
+    get_recovery_baseline,
+    get_recovery_day,
+    get_recovery_range,
+    get_wellbeing_history,
+)
 from health_agent.tools.running import (
     analyze_run,
     find_comparable_runs,
@@ -135,37 +140,37 @@ SPECIALISTS: dict[str, tuple[str, list]] = {
     ),
     "recovery": (
         _load_prompt("recovery") + _PROMPT_SUFFIX,
-        [get_recovery_baseline, get_recovery_day, get_recovery_range, estimate_daily_expenditure],
+        [get_recovery_baseline, get_recovery_day, get_recovery_range, get_wellbeing_history, estimate_daily_expenditure],
     ),
 }
 
 ORCHESTRATOR_PROMPT = (
     "Jesteś routerem. NIGDY nie znasz odpowiedzi sam - nie masz żadnych "
     "danych użytkownika w pamięci, tylko dostęp do narzędzi `delegate`, "
-    "`log_manual_entry` i `set_user_profile_facts`.\n\n"
+    "`log_manual_entries` i `set_user_profile_facts`.\n\n"
     "ZASADA 1 (pytania): każde pytanie o dane (kroki, waga, sen, treningi, "
     "jedzenie, HRV, tętno) MUSI najpierw przejść przez `delegate`, zanim "
     "cokolwiek odpowiesz - nawet jeśli wydaje Ci się, że znasz odpowiedź. "
     "Jedyny wyjątek to czysty small talk bez pytania o dane (np. samo "
     "'cześć').\n\n"
-    "ZASADA 2 (wpisy): jeśli użytkownik PODAJE fakt do zapisania (nie "
-    "pyta), użyj `log_manual_entry` zamiast `delegate`. Rozpoznaj to po "
-    "formie - stwierdzenie, nie pytanie. Przykłady:\n"
-    "- 'waga 82.1' albo 'ważę dziś 82.1 kg, 18% tłuszczu' -> "
-    "log_manual_entry(kind='weight', payload={'weight_kg': 82.1, "
-    "'fat_pct': 18})\n"
-    "- 'spaliłem dziś 2400 kalorii' (z zegarka/apki, nie zgadywanie) -> "
-    "log_manual_entry(kind='daily_calories', payload={'calories_total': "
-    "2400})\n"
-    "- 'dziś klata: wyciskanie 4x8 80kg, dipy 3x12' -> log_manual_entry("
-    "kind='strength', payload={'cwiczenia': [{'nazwa': 'wyciskanie sztangi', "
-    "'serie': 4, 'powtorzenia': 8, 'ciezar_kg': 80}, {'nazwa': 'dipy', "
-    "'serie': 3, 'powtorzenia': 12}]}) - DOKŁADNIE te klucze bez polskich "
-    "znaków (cwiczenia/nazwa/serie/powtorzenia/ciezar_kg); brak ciężaru = "
-    "pomiń ciezar_kg (masa ciała); różne serie -> 'serie': [{'powtorzenia': "
-    "5, 'ciezar_kg': 100}, ...]; 'notatka' na resztę (RPE, uwagi).\n"
-    "Zawsze ustaw `text_original` na dokładny, oryginalny tekst "
-    "użytkownika. NIE deleguj wpisów do specjalistów, to nie pytanie.\n\n"
+    "ZASADA 2 (wpisy): jeśli użytkownik PODAJE jeden lub kilka pomiarów "
+    "(nie pyta), użyj DOKŁADNIE RAZ `log_manual_entries` z listą WSZYSTKICH "
+    "wpisów. Każdy element ma kind, payload i dokładny text_original. "
+    "Przykłady kind/payload:\n"
+    "- waga: {'kind':'weight','payload':{'weight_kg':82.1,'fat_pct':18}}\n"
+    "- całodzienne spalone kalorie: "
+    "{'kind':'daily_calories','payload':{'calories_total':2400}}\n"
+    "- samopoczucie: "
+    "{'kind':'wellbeing','payload':{'score':2,'note':'słaby sen'}}; "
+    "score musi być całkowite 1–5, opcjonalna data YYYY-MM-DD\n"
+    "- notatka: {'kind':'note','payload':{'note':'boli łydka'}}\n"
+    "- trening siłowy: kind='strength', payload={'cwiczenia':[{'nazwa':"
+    "'wyciskanie','serie':4,'powtorzenia':8,'ciezar_kg':80}]} — używaj "
+    "kluczy bez polskich znaków; brak ciężaru = pomiń ciezar_kg; różne "
+    "serie -> 'serie':[{'powtorzenia':5,'ciezar_kg':100}, ...].\n"
+    "Przykład 'ważę 87 i spaliłem 2600' = dwa elementy w jednym wywołaniu. "
+    "Zawsze kopiuj pełny oryginalny tekst do text_original każdego elementu. "
+    "NIE deleguj wpisów do specjalistów, to nie pytanie.\n\n"
     "ZASADA 3 (profil): gdy użytkownik podaje fakt O SOBIE (nie pomiar z "
     "dziś): wiek, wzrost, płeć, cel wagi/kcal/białka, cel biegowy, staż, "
     "kontuzja, choroba/problem zdrowotny (refluks, alergia), preferencje "
@@ -257,7 +262,9 @@ def _make_remember_tool(agent_name: str):
     return remember_fact
 
 
-def build_leaf_agent(agent_name: str):
+def build_leaf_agent(
+    agent_name: str, *, system_suffix: str = "", allow_memory: bool = True
+):
     """Specjalista BEZ narzędzia ask_agent - używany wewnątrz ask_agent, żeby
     fizycznie zablokować głębokość > 1.
 
@@ -268,8 +275,13 @@ def build_leaf_agent(agent_name: str):
     placeholder pasujący do schematu JSON. `ask_agent` (wyżej) sam owija
     zwrócony tekst w AgentAnswer - nie wymaga tego od modelu."""
     prompt, tools = SPECIALISTS[agent_name]
-    agent = build_agent(agent_name, _prompt_with_memory(agent_name, prompt), [*tools, get_knowledge, read_document])
-    agent.tool_plain(_make_remember_tool(agent_name))
+    agent = build_agent(
+        agent_name,
+        _prompt_with_memory(agent_name, prompt) + system_suffix,
+        [*tools, get_knowledge, read_document],
+    )
+    if allow_memory:
+        agent.tool_plain(_make_remember_tool(agent_name))
     return agent
 
 
@@ -329,7 +341,7 @@ def _orchestrator_prompt() -> str:
 
 
 def build_orchestrator():
-    """`_delegate`/`log_manual_entry` są zarejestrowane jako OUTPUT FUNCTIONS
+    """`_delegate`/`log_manual_entries` są zarejestrowane jako OUTPUT FUNCTIONS
     (przez `output_type`), nie zwykłe narzędzia (`tool_plain`). Różnica:
     kiedy orchestrator wywoła jedną z nich, jej zwrócony string staje się OD
     RAZU finalną odpowiedzią (`result.output`) - bez dodatkowego wywołania
@@ -348,7 +360,7 @@ def build_orchestrator():
     agent = build_agent(
         "orchestrator", _orchestrator_prompt(),
         [get_user_profile, set_user_profile_facts, forget_knowledge, restore_knowledge, list_documents],
-        output_type=[str, _delegate, log_manual_entry],
+        output_type=[str, _delegate, log_manual_entries],
     )
     return agent
 
@@ -388,3 +400,13 @@ async def ask_orchestrator_async(question: str, history: list[tuple[str, str]] |
         return reply
     orchestrator = build_orchestrator()
     return await run_agent(orchestrator, "orchestrator", _with_history(question, history))
+
+
+async def ask_orchestrator_async_tracked(
+    question: str, history: list[tuple[str, str]] | None = None
+) -> tuple[str, int | None]:
+    """Wariant dla kanałów, które zapisują odpowiedź razem z root run ID."""
+    if (reply := _onboarding_reply(question)) is not None:
+        return reply, None
+    orchestrator = build_orchestrator()
+    return await run_agent_with_id(orchestrator, "orchestrator", _with_history(question, history))

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # --- Środowisko uruchomieniowe ---
+    app_env: Literal["development", "production", "test"] = "development"
+    scheduler_enabled: bool = False
 
     # --- Baza danych ---
     database_url: str = "postgresql+psycopg://health_agent:health_agent_dev@localhost:5432/health_agent"
@@ -44,6 +50,16 @@ class Settings(BaseSettings):
     alerts_enabled: bool = True
     alerts_stale_hours: int = 48
     alerts_check_interval_minutes: int = 60
+
+    # --- Automatyczne podsumowania na Telegramie ---
+    summary_timezone: str = "Europe/Warsaw"
+    daily_summary_enabled: bool = False
+    daily_summary_hour: int = 20
+    daily_summary_minute: int = 30
+    weekly_summary_enabled: bool = False
+    weekly_summary_day: str = "sun"
+    weekly_summary_hour: int = 20
+    weekly_summary_minute: int = 0
 
     # --- Backup bazy (pg_dump przez `docker compose exec`, patrz scheduler.py) ---
     backup_enabled: bool = True

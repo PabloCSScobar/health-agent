@@ -23,13 +23,21 @@ logger = logging.getLogger("health_agent.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler = build_scheduler()
-    scheduler.start()
-    logger.info("Scheduler wystartował (polling Intervals.icu co godzinę)")
+    scheduler = None
+    if settings.scheduler_enabled:
+        scheduler = build_scheduler()
+        scheduler.start()
+        logger.info(
+            "Scheduler wystartował (środowisko=%s, polling Intervals.icu co godzinę)",
+            settings.app_env,
+        )
+    else:
+        logger.info("Scheduler wyłączony (środowisko=%s)", settings.app_env)
     try:
         yield
     finally:
-        scheduler.shutdown(wait=False)
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="health-agent", lifespan=lifespan)

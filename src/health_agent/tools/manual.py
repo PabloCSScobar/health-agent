@@ -94,6 +94,12 @@ def _format_confirmation(entry: ManualLogEntry, log_id: int) -> str:
     if entry.kind == "daily_calories" and "calories_total" in p:
         date = p.get("date") or "dziś"
         return f"✅ Zapisano: {p['calories_total']} kcal spalonych ({date})"
+    if entry.kind == "wellbeing":
+        note = f" — {p['note']}" if p.get("note") else ""
+        return f"✅ Zapisano samopoczucie: {p['score']}/5{note}"
+    if entry.kind == "note":
+        note = p.get("note") or p.get("text") or entry.text_original
+        return f"✅ Zapisano notatkę: {note}"
     if entry.kind == "strength":
         n = len(p.get("ćwiczenia", p.get("cwiczenia", []))) or None
         suffix = f" ({n} ćwiczeń)" if n else ""
@@ -110,8 +116,9 @@ def log_manual_entry(entry: ManualLogEntry) -> str:
     dla użytkownika, bez dodatkowego wywołania modelu na samo sformułowanie
     potwierdzenia. Dlatego formatuje je deterministycznie tutaj, zamiast
     zwracać samo `id` i liczyć na to, że model ładnie to opisze."""
-    log_id = _write_manual_log(entry)
-    return _format_confirmation(entry, log_id)
+    from health_agent.tools.manual_batch import log_manual_entries
+
+    return log_manual_entries([entry])
 
 
 def get_recent_manual_logs(kind: str | None = None, limit: int = 20) -> list[dict]:

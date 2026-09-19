@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import time
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +24,7 @@ from pydantic_ai import Agent
 from health_agent.db.models import AgentRun
 from health_agent.db.session import get_session
 from health_agent.settings import settings
+from health_agent.time_utils import local_today
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "agents.yaml"
 
@@ -89,7 +91,7 @@ def build_agent(agent_name: str, system_prompt: str, tools: list[Callable] | Non
     # danych, bo jego wewnętrzne założenie "dzisiaj" jest wcześniejsze niż
     # dane treningowe z tego roku. Jawne podanie dzisiejszej daty w promptcie
     # to standardowa poprawka na dokładnie ten problem.
-    system_prompt = f"Dzisiejsza data: {dt.date.today().isoformat()}.\n\n{system_prompt}"
+    system_prompt = f"Dzisiejsza data: {local_today().isoformat()}.\n\n{system_prompt}"
 
     # Lokalne modele przez Ollamę zawodnie generują poprawny JSON przy
     # zwykłym structured output pydantic-ai (złapane na żywo: qwen3:14b w
@@ -141,7 +143,7 @@ def build_agent(agent_name: str, system_prompt: str, tools: list[Callable] | Non
     return agent
 
 
-async def run_agent(agent: Agent, agent_name: str, prompt: str) -> Any:
+async def run_agent_with_id(agent: Agent, agent_name: str, prompt: str) -> tuple[Any, int]:
     """Uruchamia agenta (async - patrz niżej dlaczego), zapisuje koszt/czas/
     drzewo do agent_runs.
 
@@ -153,9 +155,8 @@ async def run_agent(agent: Agent, agent_name: str, prompt: str) -> Any:
     deadlock the run"). Wejście z zewnątrz (CLI/Telegram) używa
     `run_agent_sync` niżej.
 
-    Zwraca tylko `result.output` - id uruchomienia w bazie jest wewnętrzną
-    księgowością (patrz agent_runs), nie czymś co wywołujący musi przekazywać
-    ręcznie - drzewo składa się samo przez contextvar.
+    Zwraca wynik oraz id biegu. Zwykli wywołujący korzystają z `run_agent`,
+    który zachowuje dotychczasowy kontrakt i zwraca tylko wynik.
     """
     parent_run_id = _current_run_id.get()
 
@@ -188,7 +189,34 @@ async def run_agent(agent: Agent, agent_name: str, prompt: str) -> Any:
         row.duration_ms = duration_ms
         row.tools_called = tools_called
 
-    return result.output
+    return result.output, run_id
+
+
+async def run_agent(agent: Agent, agent_name: str, prompt: str) -> Any:
+    """Uruchom agenta i zwróć tylko wynik, zachowując dotychczasowe API."""
+    output, _ = await run_agent_with_id(agent, agent_name, prompt)
+    return output
+
+
+@asynccontextmanager
+async def agent_run_group(agent_name: str, child_agents: list[str]):
+    """Utwórz syntetyczny korzeń dla kilku równoległych wywołań agentów."""
+    parent_run_id = _current_run_id.get()
+    with get_session() as session:
+        run = AgentRun(agent=agent_name, model="parallel-specialists", parent_run_id=parent_run_id)
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    token = _current_run_id.set(run_id)
+    started = time.monotonic()
+    try:
+        yield run_id
+    finally:
+        _current_run_id.reset(token)
+        with get_session() as session:
+            row = session.get(AgentRun, run_id)
+            row.duration_ms = int((time.monotonic() - started) * 1000)
+            row.tools_called = child_agents
 
 
 def run_agent_sync(agent: Agent, agent_name: str, prompt: str) -> Any:

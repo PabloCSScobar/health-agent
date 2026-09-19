@@ -38,11 +38,17 @@ wsl.exe -d Ubuntu-24.04 --cd /home/<uzytkownik>/health-agent -- uv run health-ag
 
 ## Pierwsze przygotowanie
 
-Rekomendowany wariant na WSL i VPS uruchamia bazę, migracje, API z jednym
-workerem oraz bota w Docker Compose:
+Rekomendowany wariant uruchamia bazę, migracje, API z jednym workerem oraz
+bota w Docker Compose. Lokalny development:
 
 ```bash
 ./deploy/install.sh
+```
+
+Pierwsza instalacja na VPS:
+
+```bash
+./deploy/install.sh production
 ```
 
 Skrypt tworzy nowy `.env`, generuje hasło bazy i sekret webhooka, a następnie
@@ -65,11 +71,16 @@ Uzupełnij `.env` lokalnie. Pełny zestaw ustawień definiuje
   Jeśli ustawiasz `POSTGRES_PASSWORD` dla Compose, dopasuj też `DATABASE_URL`.
 - `ANTHROPIC_API_KEY` — dla modeli Anthropic; wybór per agent znajduje się
   w `config/agents.yaml`. Ollama jest alternatywą skonfigurowaną w `Settings`.
+- `APP_ENV` — `development`, `production` albo `test`; `/status` bota pokazuje
+  aktywne środowisko.
+- `SCHEDULER_ENABLED` — uruchamia scheduler wewnątrz API. Lokalnie domyślnie
+  `false`, na VPS ustawiane przez `install.sh production` na `true`.
 - `INTERVALS_API_KEY`, `INTERVALS_ATHLETE_ID` — polling treningów i wellness.
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — bot i dozwolony czat.
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — bot i dozwolony czat. Development
+  i production muszą mieć osobne tokeny botów, jeśli działają równocześnie.
 - `WEBHOOK_SHARED_SECRET` — wspólna wartość z nagłówkiem `X-Webhook-Secret`
   w aplikacji telefonu. Ustaw przed udostępnieniem webhooka.
-- `ALERTS_*`, `BACKUP_*` — opcje schedulera; domyślne wartości są w `Settings`.
+- `ALERTS_*`, `BACKUP_*`, `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*` — opcje schedulera; podsumowania są domyślnie wyłączone, a ich strefę ustawia `SUMMARY_TIMEZONE`.
 - `FITATU_*` — obecnie dla eksperymentalnego skryptu API, nie głównej ingestii.
 
 W natywnym trybie deweloperskim można uruchomić tylko bazę i zastosować migracje:
@@ -101,9 +112,10 @@ uv run uvicorn health_agent.api.app:app --host 0.0.0.0 --port 8000 \
 
 API udostępnia `GET /health` i `POST /webhook/healthconnect`.
 `/health` sprawdza odpowiedź procesu, nie bazę ani świeżość danych.
-Na starcie lifespan wykonuje się polling Intervals.icu i domyślnie backup.
-Alerty są również domyślnie włączone. Uruchamiaj jedną instancję API;
-wiele workerów powieli scheduler. Wyłączenie alertów i backupu nie wyłącza pollingu.
+Gdy `SCHEDULER_ENABLED=true`, lifespan uruchamia polling Intervals.icu,
+alerty i domyślnie backup. Uruchamiaj wtedy jedną instancję API; wiele
+workerów powieli scheduler. Wyłączenie alertów i backupu nie wyłącza pollingu.
+Przy `SCHEDULER_ENABLED=false` API i webhook działają bez zadań okresowych.
 
 W osobnym terminalu bot (long polling):
 
@@ -112,13 +124,34 @@ uv run python -m health_agent.channels.telegram
 ```
 
 Obsługuje tekst, import dokumentów tekstowych oraz `/status`, `/cost`,
-`/profil`. Nie uruchamiaj dwóch botów z tym samym tokenem.
+`/profil`, `/sync`, `/daily` i `/weekly`. `/sync` uruchamia ten sam
+bezpieczny catch-up Intervals.icu co scheduler; nie odświeża jeszcze żywienia
+z Fitatu. `/status` pokazuje również środowisko i stan
+schedulera. Reakcje 👍/👎 na odpowiedzi zapisują feedback; komentarz można
+dodać jako reply zaczynający się od 👍, 👎 albo `feedback:`. Nie uruchamiaj
+dwóch botów z tym samym tokenem; utwórz osobny bot przez BotFather dla dev.
+
+Przy aktualizacji starszego lokalnego `.env`, który nie ma jeszcze
+`APP_ENV`, najpierw utwórz osobnego bota dev i wpisz jego token, a następnie
+dodaj:
+
+```env
+APP_ENV=development
+SCHEDULER_ENABLED=false
+TELEGRAM_BOT_TOKEN=<token-osobnego-bota-dev>
+```
+
+Dopiero potem uruchamiaj lokalny `bot` lub pełne Compose. Instalator wymaga
+jawnego argumentu, jeśli zastanie starszy `.env` bez `APP_ENV`.
 
 Przykłady CLI (chat/import wywołują modele i zapisują dane; ingest zapisuje do bazy):
 
 ```bash
 uv run health-agent --help
 uv run health-agent chat "Podsumuj ostatni tydzień biegania"
+uv run health-agent daily
+uv run health-agent weekly
+uv run health-agent feedback --bad --days 30
 uv run health-agent ingest intervals --since 2026-09-01 --until 2026-09-07
 uv run health-agent ingest healthconnect --file /tmp/synthetic-healthconnect.json
 uv run health-agent import /tmp/synthetic-note.md --title "Notatka testowa" --date 2026-09-01
@@ -136,12 +169,13 @@ po wcześniejszym `uv sync --frozen`:
 
 ```bash
 uv run --frozen --no-sync python -m compileall -q src scripts alembic
+uv run --frozen --no-sync python -m unittest discover -s tests -p 'test_*.py'
 uv run --frozen --no-sync health-agent --help
 git diff --check
 ```
 
-Nie zastępują testów zachowania. Repo nie ma obecnie osobnego zestawu
-`pytest` ani konfiguracji CI. `scripts/test_*.py` to smoke testy integracji.
+Testy w `tests/` używają standardowego `unittest`. Repo nie ma obecnie
+konfiguracji `pytest` ani CI. `scripts/test_*.py` to smoke testy integracji.
 
 `scripts/eval_agents.py` wymaga modeli i bazy, generuje koszt API,
 może zmieniać profil/wiedzę i czyści **całe `agent_runs`**. Uruchamiaj go
@@ -174,7 +208,7 @@ Backup w schedulerze robi `pg_dump` bazy wskazanej przez `DATABASE_URL`
 (domyślnie co 24h, retencja 14 dni, także przy starcie). W Compose zapisuje
 gzip w nazwanym wolumenie `health_agent_backups`; przy uruchomieniu natywnym
 domyślnie używa katalogu `backups/`.
-Backup na tym samym dysku nie jest kopią poza komputerem.
+Backup na tym samym hoście nie jest kopią poza VPS-em.
 
 Przed przekazaniem pracy między Codex i Claude Code zatrzymaj edycję w jednym
 narzędziu, przejrzyj diff i przekaż cel oraz wynik weryfikacji. Przy dłuższym

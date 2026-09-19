@@ -32,6 +32,7 @@ from sqlalchemy import select
 from health_agent.db.models import Recovery, Workout
 from health_agent.db.session import get_session
 from health_agent.settings import settings
+from health_agent.time_utils import local_date as _local_date, local_today as _today
 
 RUN_SPORTS = ("Run", "VirtualRun", "TrailRun")
 WALK_PACE_THRESHOLD_S_KM = 540  # wolniej niż 9:00/km = marsz, nie bieg
@@ -94,7 +95,7 @@ def _efficiency(w: Workout) -> float | None:
 def _run_row(w: Workout) -> dict:
     return {
         "external_id": w.external_id,
-        "date": w.started_at.date().isoformat() if w.started_at else None,
+        "date": _local_date(w.started_at).isoformat() if w.started_at else None,
         "type": w.sport,
         "is_walk": _is_walk(w),
         "trainer": bool(_raw(w, "trainer")),
@@ -188,12 +189,12 @@ def get_running_profile() -> dict:
             zones.append({"zone": ZONE_NAMES[i] if i < len(ZONE_NAMES) else f"Z{i+1}", "from_hr": lo, "to_hr": hi})
             lo = hi + 1
 
-    today = dt.date.today()
+    today = _today()
     monday = today - dt.timedelta(days=today.weekday())
     weekly_km: dict[dt.date, float] = defaultdict(float)
     weekly_runs: dict[dt.date, int] = defaultdict(int)
     for w in runs:
-        d = w.started_at.date()
+        d = _local_date(w.started_at)
         wk = d - dt.timedelta(days=d.weekday())
         if wk < monday:  # tylko pełne tygodnie
             weekly_km[wk] += (w.distance_m or 0) / 1000
@@ -221,7 +222,7 @@ def get_running_profile() -> dict:
         "typical_pace_all_runs": _pace_str(statistics.median(all_paces)) if all_paces else None,
         "longest_run_90d": _run_row(longest) if longest else None,
         "last_run": _run_row(last_run) if last_run else None,
-        "days_since_last_run": (today - last_run.started_at.date()).days if last_run else None,
+        "days_since_last_run": (today - _local_date(last_run.started_at)).days if last_run else None,
         "runs_90d": len(runs),
         "treadmill_walks_90d": {"count": len(walks), "km": round(sum((w.distance_m or 0) for w in walks) / 1000, 1),
                                 "note": "VirtualRun z bieżni o tempie >9:00/km lub HR<105 = marsz; liczony osobno, nie jako bieg"},
@@ -239,12 +240,12 @@ def get_weekly_running_load(weeks: int = 8) -> dict:
     days = weeks * 7 + 7
     runs = _load_runs(days, include_walks=True)
     all_w = _load_all_workouts(35)
-    today = dt.date.today()
+    today = _today()
     this_monday = today - dt.timedelta(days=today.weekday())
 
     by_week: dict[dt.date, list[Workout]] = defaultdict(list)
     for w in runs:
-        d = w.started_at.date()
+        d = _local_date(w.started_at)
         by_week[d - dt.timedelta(days=d.weekday())].append(w)
 
     weeks_out = []
@@ -318,7 +319,7 @@ def get_intensity_distribution(days: int = 28) -> dict:
         if w.avg_hr and len(bounds) >= 3 and (w.distance_m or 0) >= MIN_ANALYSIS_KM * 1000:
             cls = "easy" if w.avg_hr <= bounds[1] else "moderate" if w.avg_hr <= bounds[2] else "hard"
             sessions[cls] += 1
-            session_rows.append({"date": w.started_at.date().isoformat(), "km": round((w.distance_m or 0) / 1000, 1), "avg_hr": w.avg_hr, "class": cls})
+            session_rows.append({"date": _local_date(w.started_at).isoformat(), "km": round((w.distance_m or 0) / 1000, 1), "avg_hr": w.avg_hr, "class": cls})
     total = sum(zone_secs) or 1
     easy = zone_secs[0] + zone_secs[1]
     moderate = zone_secs[2]
@@ -354,7 +355,7 @@ def get_efficiency_trend(days: int = 90) -> dict:
         ef = _efficiency(w)
         if ef is None:
             continue
-        d = w.started_at.date()
+        d = _local_date(w.started_at)
         by_week[d - dt.timedelta(days=d.weekday())].append(ef)
         rows.append({"date": d.isoformat(), "km": round((w.distance_m or 0) / 1000, 1), "pace": _pace_str(w.avg_pace), "avg_hr": w.avg_hr, "ef": ef, "temp_c": _raw(w, "average_temp") and round(_raw(w, "average_temp"))})
     weekly = [{"week_start": k.isoformat(), "median_ef": round(statistics.median(v), 3), "runs": len(v)} for k, v in sorted(by_week.items())]
@@ -500,7 +501,7 @@ def get_fitness_form(days: int = 42) -> dict:
     Intervals.icu, spróbkowany co tydzień + pełne ostatnie 7 dni, z pasmem
     wg Friela i ramp rate. Do pytań "jaka moja forma", "czy jestem
     zmęczony/wypoczęty", "kiedy zrobić mocny trening", planowania tygodnia."""
-    since = dt.date.today() - dt.timedelta(days=days)
+    since = _today() - dt.timedelta(days=days)
     with get_session() as session:
         rows = session.execute(select(Recovery).where(Recovery.date >= since).order_by(Recovery.date)).scalars().all()
         data = [(r.date, r.raw_json or {}) for r in rows]
@@ -508,7 +509,7 @@ def get_fitness_form(days: int = 42) -> dict:
     for i, (d, raw) in enumerate(data):
         if raw.get("ctl") is None:
             continue
-        is_recent = (dt.date.today() - d).days <= 7
+        is_recent = (_today() - d).days <= 7
         if is_recent or i % 7 == 0:
             f = _form_summary(raw.get("ctl"), raw.get("atl"))
             series.append({"date": d.isoformat(), "ctl": f.get("ctl_fitness"), "atl": f.get("atl_fatigue"), "tsb": f.get("tsb_form"), "form_pct": f.get("form_pct"), "ramp_rate": round(raw["rampRate"], 1) if raw.get("rampRate") is not None else None})

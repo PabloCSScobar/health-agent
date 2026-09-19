@@ -4,6 +4,12 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
+requested_mode=${1:-}
+if [[ -n "$requested_mode" && "$requested_mode" != development && "$requested_mode" != production ]]; then
+    echo "Użycie: ./deploy/install.sh [development|production]" >&2
+    exit 2
+fi
+
 for command_name in docker openssl; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Brak wymaganej komendy: $command_name" >&2
@@ -37,6 +43,27 @@ set_env_value() {
     ' .env >"$tmp"
     mv "$tmp" .env
 }
+
+install_mode=$requested_mode
+if [[ -z "$install_mode" ]]; then
+    install_mode=$(env_value APP_ENV)
+fi
+if [[ -z "$install_mode" ]]; then
+    echo "Istniejący .env nie ma APP_ENV; wybierz jawnie development albo production." >&2
+    echo "Użycie: ./deploy/install.sh [development|production]" >&2
+    exit 2
+fi
+if [[ "$install_mode" != development && "$install_mode" != production && "$install_mode" != test ]]; then
+    echo "Nieprawidłowe APP_ENV w .env: ${install_mode}" >&2
+    exit 2
+fi
+set_env_value APP_ENV "$install_mode"
+if [[ "$install_mode" == production ]]; then
+    set_env_value SCHEDULER_ENABLED true
+else
+    set_env_value SCHEDULER_ENABLED false
+fi
+echo "Tryb instalacji: ${install_mode} (scheduler: $(env_value SCHEDULER_ENABLED))."
 
 postgres_password=$(env_value POSTGRES_PASSWORD)
 if [[ -z "$postgres_password" ]]; then

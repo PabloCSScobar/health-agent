@@ -15,8 +15,8 @@ registry.py albo modelu w config/agents.yaml:
     uv run python scripts/eval_agents.py import     # import wiedzy: ekstrakcja, rekoncyliacja, undo, użycie
     uv run python scripts/eval_agents.py all
 
-Testy 10-12 (wpisy ręczne) same sprzątają po sobie z bazy - bezpieczne do
-uruchomienia na produkcyjnej bazie, ale i tak najlepiej robić to lokalnie/dev.
+Skrypt czyści całą tabelę `agent_runs` i wykonuje zapisy. Wymaga
+`APP_ENV=test` oraz osobnej bazy testowej; NIGDY nie uruchamiaj go na produkcji.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from health_agent.agents.registry import ask_orchestrator_async
 from health_agent.db.models import AgentRun, BodyComposition, DailyActivity, ManualLog
 from health_agent.db.session import get_session
 from health_agent.tools.manual import ManualLogEntry, _write_manual_log
+from health_agent.settings import settings
 
 RoutingRow = tuple[str, int | None]
 
@@ -116,7 +117,13 @@ def _no_described_not_executed_tool_calls(answer: str, routing: list[RoutingRow]
     (np. "Wywołaj ask_agent(recovery, ...)" jako tekst do użytkownika)."""
     errors = []
     lowered = answer.lower()
-    for marker in ("ask_agent(", "wywołaj `ask_agent", "wywołaj ask_agent", "log_manual_entry("):
+    for marker in (
+        "ask_agent(",
+        "wywołaj `ask_agent",
+        "wywołaj ask_agent",
+        "log_manual_entry(",
+        "log_manual_entries(",
+    ):
         if marker in lowered:
             errors.append(f"odpowiedź opisuje wywołanie narzędzia zamiast go wykonać (zawiera '{marker}')")
     return errors
@@ -816,6 +823,9 @@ async def run_case(case: Case) -> tuple[bool, list[str], float, float]:
 
 async def main() -> None:
     suite = sys.argv[1] if len(sys.argv) > 1 else "core"
+    if settings.app_env != "test":
+        raise SystemExit("eval_agents.py wymaga APP_ENV=test i osobnej bazy testowej")
+
     if suite == "running":
         failures, n, cost = await run_running_suite()
         print(f"\nRazem: {n} testów, {failures} nieudanych, koszt LLM: ${cost:.4f}")

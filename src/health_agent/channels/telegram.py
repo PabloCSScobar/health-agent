@@ -8,16 +8,18 @@ plan, sekcja "Dane zdrowotne: ... bot ograniczony do jednego chat_id").
 from __future__ import annotations
 
 import datetime as dt
+import asyncio
 import logging
 import re
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from telegram import Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, MessageReactionHandler, filters
 
-from health_agent.db.models import AgentRun, Conversation
+from health_agent.db.models import AgentRun, Conversation, Feedback
 from health_agent.db.session import get_session
 from health_agent.settings import settings
 
@@ -39,42 +41,174 @@ _pending_import: dict[str, str] = {}  # chat_id -> tekst czekający na "tak" (je
 
 
 def _chunks(text: str) -> list[str]:
+    """Podziel tekst bez pustych kawałków, także gdy jeden akapit przekracza limit."""
     if len(text) <= TELEGRAM_MAX:
         return [text]
-    out, buf = [], ""
+    out: list[str] = []
+    buf = ""
     for para in text.split("\n"):
-        if len(buf) + len(para) + 1 > TELEGRAM_MAX:
-            out.append(buf)
+        while len(para) > TELEGRAM_MAX:
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.append(para[:TELEGRAM_MAX])
+            para = para[TELEGRAM_MAX:]
+        candidate = f"{buf}\n{para}" if buf else para
+        if len(candidate) > TELEGRAM_MAX:
+            if buf:
+                out.append(buf)
             buf = para
         else:
-            buf = f"{buf}\n{para}" if buf else para
+            buf = candidate
     if buf:
         out.append(buf)
     return out
 
 
-async def _reply(message: Message, text: str) -> None:
-    """Wysyła odpowiedź z Markdownem. Legacy Markdown, nie MarkdownV2 - dużo
-    bardziej wyrozumiały dla nieuciekanionych znaków specjalnych, które LLM
-    naturalnie generuje (kropki, nawiasy itp.). Jeśli model i tak wygeneruje
-    niezbalansowany markup, Telegram odrzuci wiadomość - łapiemy to i
-    wysyłamy zwykły tekst zamiast w ogóle nie odpowiadać."""
+async def _reply(message: Message, text: str, on_sent=None) -> list[Message]:
+    """Wyślij odpowiedź w kawałkach i zwróć wszystkie wiadomości Telegrama."""
+    sent_messages = []
     for chunk in _chunks(text):
         try:
-            await message.reply_text(_to_telegram_markdown(chunk), parse_mode=ParseMode.MARKDOWN)
+            sent = await message.reply_text(_to_telegram_markdown(chunk), parse_mode=ParseMode.MARKDOWN)
         except BadRequest:
             logger.warning("Markdown się nie sparsował, wysyłam zwykły tekst")
-            await message.reply_text(chunk)
+            sent = await message.reply_text(chunk)
+        sent_messages.append(sent)
+        if on_sent is not None:
+            on_sent(sent_messages)
+    return sent_messages
+
+
+def _create_assistant_conversation(chat_id: str, content: str, agent: str, root_run_id: int | None = None) -> int:
+    with get_session() as session:
+        row = Conversation(
+            chat_id=chat_id,
+            role="assistant",
+            content=content,
+            agent=agent,
+            root_run_id=root_run_id,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+
+def _update_conversation_messages(conversation_id: int, messages: list[Message] | list[int]) -> None:
+    message_ids = [item if isinstance(item, int) else item.message_id for item in messages]
+    with get_session() as session:
+        row = session.get(Conversation, conversation_id)
+        if row is None:
+            raise LookupError(f"Brak rozmowy id={conversation_id}")
+        row.telegram_message_id = message_ids[0] if message_ids else None
+        row.telegram_message_ids = message_ids
+
+
+def _delete_conversation_if_unsent(conversation_id: int) -> None:
+    with get_session() as session:
+        row = session.get(Conversation, conversation_id)
+        if row is not None and not row.telegram_message_ids:
+            session.delete(row)
+
+
+async def _tracked_reply(
+    message: Message, text: str, agent: str, root_run_id: int | None = None
+) -> list[Message]:
+    conversation_id = _create_assistant_conversation(
+        str(message.chat_id), text, agent, root_run_id
+    )
+    try:
+        return await _reply(
+            message,
+            text,
+            on_sent=lambda sent: _update_conversation_messages(conversation_id, sent),
+        )
+    except Exception:
+        # Gdy choć jeden kawałek dotarł, zachowujemy jego ID, aby nadal dało
+        # się wystawić feedback. Wiersz bez żadnej wysłanej wiadomości usuwamy.
+        _delete_conversation_if_unsent(conversation_id)
+        raise
 
 
 def _is_authorized(update: Update) -> bool:
     if not settings.telegram_chat_id:
-        # Brak ustawionej whitelisty - w praktyce nie powinno się zdarzyć
-        # poza pierwszym uruchomieniem (patrz instrukcja w skrypcie testowym),
-        # ale nie blokujemy na twardo, żeby dało się w ogóle poznać chat_id.
-        return True
+        logger.error("Brak TELEGRAM_CHAT_ID — odrzucam aktualizację Telegrama")
+        return False
+    if update.effective_chat is None:
+        return False
     return str(update.effective_chat.id) == str(settings.telegram_chat_id)
 
+
+def _find_feedback_target(chat_id: str, message_id: int) -> Conversation | None:
+    with get_session() as session:
+        direct = session.execute(
+            select(Conversation).where(
+                Conversation.chat_id == chat_id,
+                Conversation.telegram_message_id == message_id,
+                Conversation.role == "assistant",
+            )
+        ).scalar_one_or_none()
+        if direct is not None:
+            return direct
+        candidates = session.execute(
+            select(Conversation).where(
+                Conversation.chat_id == chat_id,
+                Conversation.role == "assistant",
+                Conversation.telegram_message_ids.isnot(None),
+            )
+        ).scalars().all()
+        return next((row for row in candidates if message_id in (row.telegram_message_ids or [])), None)
+
+def _store_feedback(conversation_id: int, agent_run_id: int | None, rating: int, comment: str | None = None) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    values = {
+        "conversation_id": conversation_id,
+        "agent_run_id": agent_run_id,
+        "rating": rating,
+        "comment": comment,
+        "created_at": now,
+        "updated_at": now,
+    }
+    updates = {"agent_run_id": agent_run_id, "rating": rating, "updated_at": now}
+    if comment is not None:
+        updates["comment"] = comment
+    stmt = pg_insert(Feedback).values(**values).on_conflict_do_update(
+        constraint="uq_feedback_conversation",
+        set_=updates,
+    )
+    with get_session() as session:
+        session.execute(stmt)
+
+async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reaction = update.message_reaction
+    if reaction is None or not _is_authorized(update):
+        return
+    chat_id = str(reaction.chat.id)
+    target = _find_feedback_target(chat_id, reaction.message_id)
+    if target is None:
+        logger.info("Brak rozmowy dla reakcji chat_id=%s message_id=%s", chat_id, reaction.message_id)
+        return
+
+    emojis = {getattr(item, "emoji", None) for item in reaction.new_reaction}
+    rating = -1 if "👎" in emojis else 1 if "👍" in emojis else None
+    with get_session() as session:
+        existing = session.execute(
+            select(Feedback).where(Feedback.conversation_id == target.id)
+        ).scalar_one_or_none()
+        if rating is None:
+            if existing is not None:
+                session.delete(existing)
+            return
+    _store_feedback(target.id, target.root_run_id, rating)
+
+
+def _feedback_comment(text: str) -> tuple[int | None, str] | None:
+    match = re.match(r"^\s*(👍|👎|feedback:)\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    marker, comment = match.groups()
+    rating = 1 if marker == "👍" else -1 if marker == "👎" else None
+    return rating, comment.strip()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -88,6 +222,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     text = update.message.text
 
+    if update.message.reply_to_message and (parsed := _feedback_comment(text)) is not None:
+        target = _find_feedback_target(chat_id, update.message.reply_to_message.message_id)
+        if target is None:
+            await update.message.reply_text("Nie znalazłem ocenianej odpowiedzi.")
+            return
+        rating, comment = parsed
+        if rating is None:
+            with get_session() as session:
+                existing = session.execute(select(Feedback).where(Feedback.conversation_id == target.id)).scalar_one_or_none()
+                if existing is None:
+                    await update.message.reply_text("Najpierw oceń odpowiedź reakcją 👍 lub 👎.")
+                    return
+                rating = existing.rating
+        _store_feedback(target.id, target.root_run_id, rating, comment or None)
+        await update.message.reply_text("Feedback zapisany. Dzięki!")
+        return
+
     # Import wiedzy z wklejonego tekstu: długa wiadomość może być notatką
     # ALBO długim pytaniem - pytamy raz, nie zgadujemy. Odpowiedź "tak"
     # importuje; cokolwiek innego = normalna rozmowa.
@@ -98,9 +249,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             from health_agent.agents.importer import import_document
 
             report = await import_document(pending, title=f"notatka z Telegrama {dt.date.today().isoformat()}", source="telegram_text")
-            with get_session() as session:
-                session.add(Conversation(chat_id=chat_id, role="assistant", content=report, agent="importer"))
-            await _reply(update.message, report)
+            await _tracked_reply(update.message, report, "importer")
             return
     elif len(text) >= IMPORT_MIN_CHARS and "?" not in text[-200:]:
         _pending_import[chat_id] = text
@@ -128,18 +277,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    from health_agent.agents.registry import ask_orchestrator_async
+    from health_agent.agents.registry import ask_orchestrator_async_tracked
 
+    root_run_id = None
     try:
-        answer = await ask_orchestrator_async(text, history=history)
+        answer, root_run_id = await ask_orchestrator_async_tracked(text, history=history)
     except Exception:
         logger.exception("Błąd podczas odpowiadania na wiadomość")
         answer = "Coś poszło nie tak przy próbie odpowiedzi - spróbuj ponownie za chwilę."
 
-    with get_session() as session:
-        session.add(Conversation(chat_id=chat_id, role="assistant", content=answer, agent="orchestrator"))
-
-    await _reply(update.message, answer)
+    await _tracked_reply(update.message, answer, "orchestrator", root_run_id)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -173,8 +320,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat_id = str(update.effective_chat.id)
     with get_session() as session:
         session.add(Conversation(chat_id=chat_id, role="user", content=f"[plik: {name}]"))
-        session.add(Conversation(chat_id=chat_id, role="assistant", content=report, agent="importer"))
-    await _reply(update.message, report)
+    await _tracked_reply(update.message, report, "importer")
+
+
+def _runtime_status_lines() -> list[str]:
+    return [
+        "**Status aplikacji:**",
+        f"- Środowisko: {settings.app_env}",
+        f"- Scheduler: {'włączony' if settings.scheduler_enabled else 'wyłączony'}",
+        "",
+        "**Status synchronizacji:**",
+    ]
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -187,11 +343,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         last_body = session.execute(select(BodyComposition).order_by(BodyComposition.measured_at.desc()).limit(1)).scalar_one_or_none()
         last_nutrition = session.execute(select(NutritionDay).order_by(NutritionDay.date.desc()).limit(1)).scalar_one_or_none()
 
-    lines = ["**Status synchronizacji:**"]
+    lines = _runtime_status_lines()
     lines.append(f"- Ostatni trening: {last_workout.started_at if last_workout else 'brak'}")
     lines.append(f"- Ostatnia waga: {last_body.measured_at if last_body else 'brak'}")
     lines.append(f"- Ostatni dzień odżywiania: {last_nutrition.date if last_nutrition else 'brak'}")
-    await _reply(update.message, "\n".join(lines))
+    await _tracked_reply(update.message, "\n".join(lines), "status")
 
 
 async def cmd_profil(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -210,10 +366,7 @@ async def cmd_profil(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     onboarding = onboarding_message()
     if onboarding:
         text += "\n\n" + onboarding
-        chat_id = str(update.effective_chat.id)
-        with get_session() as session:
-            session.add(Conversation(chat_id=chat_id, role="assistant", content=onboarding, agent="profil"))
-    await _reply(update.message, text)
+    await _tracked_reply(update.message, text, "profil")
 
 
 async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -225,8 +378,67 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     total_cost = sum(r.cost_usd for r in runs if r.cost_usd) or 0.0
     total_calls = len(runs)
-    await update.message.reply_text(f"Ostatnie 24h: {total_calls} wywołań agentów, koszt: ${total_cost:.4f}")
+    await _tracked_reply(
+        update.message,
+        f"Ostatnie 24h: {total_calls} wywołań agentów, koszt: ${total_cost:.4f}",
+        "cost",
+    )
 
+
+
+async def _cmd_summary(update: Update, period: str) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    from zoneinfo import ZoneInfo
+
+    from health_agent.agents.summaries import build_daily_summary, build_weekly_summary
+
+    today = dt.datetime.now(ZoneInfo(settings.summary_timezone)).date()
+    result = await (build_daily_summary(today) if period == "daily" else build_weekly_summary(today))
+    await _tracked_reply(update.message, result.text, period, result.root_run_id)
+
+
+async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    if update.effective_chat:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await _cmd_summary(update, "daily")
+
+
+async def cmd_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    if update.effective_chat:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await _cmd_summary(update, "weekly")
+
+
+async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    from health_agent.ingest.sync import sync_intervals
+
+    try:
+        result = await asyncio.to_thread(sync_intervals)
+        if result.status == "busy":
+            text = "Synchronizacja Intervals.icu już trwa. Spróbuj ponownie za chwilę."
+        else:
+            text = (
+                f"✅ Intervals.icu zsynchronizowane za {result.oldest}–{result.newest}: "
+                f"{result.workouts} treningów i {result.wellness_days} dni wellness. "
+                "Żywienie jest odświeżane osobno przez Health Connect."
+            )
+            if result.truncated:
+                text += (
+                    " Zakres został ograniczony do 60 dni; starszą lukę trzeba "
+                    "uzupełnić ręcznie przez CLI."
+                )
+    except Exception:
+        logger.exception("Ręczna synchronizacja Intervals.icu nieudana")
+        text = "Nie udało się zsynchronizować Intervals.icu. Spróbuj ponownie za chwilę."
+    await _tracked_reply(update.message, text, "sync")
 
 def build_bot():
     if not settings.telegram_bot_token:
@@ -236,6 +448,10 @@ def build_bot():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("profil", cmd_profil))
+    app.add_handler(CommandHandler("daily", cmd_daily))
+    app.add_handler(CommandHandler("weekly", cmd_weekly))
+    app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(MessageReactionHandler(handle_reaction))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     return app
@@ -246,8 +462,8 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     app = build_bot()
-    print("Bot Telegram działa (long polling). Ctrl+C żeby zatrzymać.")
-    app.run_polling()
+    print(f"Bot Telegram działa (środowisko={settings.app_env}, long polling). Ctrl+C żeby zatrzymać.")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":

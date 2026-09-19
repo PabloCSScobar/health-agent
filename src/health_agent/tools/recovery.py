@@ -7,8 +7,9 @@ import datetime as dt
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from health_agent.db.models import DailyActivity, Recovery, Sleep
+from health_agent.db.models import DailyActivity, ManualLog, Recovery, Sleep
 from health_agent.db.session import get_session
+from health_agent.time_utils import local_date, local_today
 
 
 class RecoveryDayPoint(BaseModel):
@@ -97,9 +98,75 @@ def get_recovery_range(days: int = 14) -> list[RecoveryDayPoint]:
     to znaczy że tej danej po prostu nie mamy z żadnego źródła - powiedz to
     wprost, nie myl z kaloriami z konkretnego treningu (to inne narzędzie -
     running)."""
-    since = dt.date.today() - dt.timedelta(days=days)
-    until = dt.date.today()
+    since = local_today() - dt.timedelta(days=days)
+    until = local_today()
     return _recovery_points(since, until)
+
+def get_wellbeing_history(days: int = 14, end_date: dt.date | None = None) -> dict:
+    """Ręczne samopoczucie i notatki z wybranego lokalnego zakresu dni.
+
+    Średnia używa ostatniej poprawnej oceny 1–5 z każdego dnia. Starsze lub
+    niepełne wpisy pozostają tekstem i nigdy nie dostają wymyślonej oceny.
+    """
+    if days < 1:
+        raise ValueError("days musi być większe od zera")
+    end = end_date or local_today()
+    start = end - dt.timedelta(days=days - 1)
+    with get_session() as session:
+        rows = session.execute(
+            select(ManualLog)
+            .where(ManualLog.kind.in_(["wellbeing", "note"]))
+            .order_by(ManualLog.logged_at)
+        ).scalars().all()
+
+    entries = []
+    latest_score_by_day: dict[dt.date, int] = {}
+    for row in rows:
+        payload = row.payload_json or {}
+        raw_date = payload.get("date")
+        try:
+            event_date = dt.date.fromisoformat(raw_date) if raw_date else local_date(row.logged_at)
+            date_source = "payload" if raw_date else "logged_at"
+        except (TypeError, ValueError):
+            event_date = local_date(row.logged_at)
+            date_source = "logged_at"
+        if not start <= event_date <= end:
+            continue
+        raw_score = payload.get("score")
+        score = (
+            raw_score
+            if isinstance(raw_score, int)
+            and not isinstance(raw_score, bool)
+            and 1 <= raw_score <= 5
+            else None
+        )
+        note = payload.get("note") or payload.get("notatka") or row.text_original
+        entries.append(
+            {
+                "date": event_date.isoformat(),
+                "date_source": date_source,
+                "kind": row.kind,
+                "score": score,
+                "note": note,
+                "text_original": row.text_original,
+                "logged_at": row.logged_at.isoformat(),
+            }
+        )
+        if score is not None:
+            latest_score_by_day[event_date] = score
+
+    scores = list(latest_score_by_day.values())
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "entries": entries,
+        "days_with_score": len(scores),
+        "avg_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "latest_score_by_day": {
+            day.isoformat(): score for day, score in sorted(latest_score_by_day.items())
+        },
+    }
+
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +201,7 @@ def get_recovery_baseline(days: int = 28) -> dict:
     wołanie get_recovery_day kilka razy - jedno wywołanie, gotowe
     porównania. Wartości interpretuj WYŁĄCZNIE względem bazy tego
     użytkownika (HRV 60 może być świetne dla jednego, słabe dla innego)."""
-    points = _recovery_points(dt.date.today() - dt.timedelta(days=days), dt.date.today())
+    points = _recovery_points(local_today() - dt.timedelta(days=days), local_today())
     if not points:
         return {"note": "brak danych regeneracyjnych"}
     last = points[-1]

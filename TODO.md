@@ -1,6 +1,6 @@
 # TODO / pomysły na rozwój
 
-Stan na 2026-09-18. Plan implementacji otwartych punktów: `PLAN.md`. Fazy 0-3 z planu zakończone (MVP działa: ingestia, agenci,
+Stan na 2026-09-19. Plan implementacji otwartych punktów: `PLAN.md`. Fazy 0-3 z planu zakończone (MVP działa: ingestia, agenci,
 Telegram, alerty, backup). Poniżej wszystko, co jeszcze nie jest zrobione -
 z planu i z burzy mózgów. Kolejność w sekcjach = sugerowany priorytet.
 Historia decyzji i znalezisk technicznych: `scripts/README.md`.
@@ -10,20 +10,20 @@ Historia decyzji i znalezisk technicznych: `scripts/README.md`.
 - [x] **Cele i profil użytkownika** - `tools/profile.py` (agent_memory pod
   `user_profile`, wstrzykiwany do każdego specjalisty, `set_user_profile_facts`
   w orchestratorze). Użytkownik musi PODAĆ wartości na Telegramie ("mam 34
-  lata, 182 cm, cel 84 kg") - dziś profil jest pusty.
+  lata, 182 cm, cel 84 kg") - aplikacja nie uzupełnia ich automatycznie.
 - [x] **Szacunek całodniowego wydatku** - `tools/energy.py` + `get_energy_balance`
   w nutrition. Wymaga wzrostu/wieku/płci w profilu.
 - [x] **Miara jakości w `scripts/eval_agents.py`** - sędzia LLM (Haiku, 5
   kryteriów kontraktu) dla wszystkich pięciu specjalistów. Sędzia NIE weryfikuje
   poprawności liczb (nie widzi wyników narzędzi) - gdyby to było potrzebne:
   zapisywać wyniki narzędzi w `agent_runs` i dawać je sędziemu.
-- [ ] **`/sync` na Telegramie + narzędzie "odśwież dzisiejsze jedzenie"** -
-  `ingest_range` i klient Fitatu (`scripts/test_fitatu.py`) już istnieją,
-  tylko nie są podpięte. Uwaga: token Fitatu z `.env` wygasa po godzinie
-  (JWT `exp`), `FITATU_REFRESH_TOKEN` jest pusty - najpierw refresh flow.
-- [ ] **Tygodniowe podsumowanie** (niedziela wieczór: km, trend wagi, średni
-  deficyt, sen, HRV, co poszło dobrze/źle). Dzienne raporty świadomie
-  odrzucone jako szum - tygodniowe to inna kategoria. Wszystkie klocki są.
+- [x] **`/sync` Intervals.icu na Telegramie** - wspólny z schedulerem catch-up
+  (3 dni, zakładka od markera, limit 60 dni), blokada transakcyjna PostgreSQL
+  przeciw równoległym procesom i atomowy zapis audytu, danych oraz markera.
+- [ ] **Narzędzie "odśwież dzisiejsze jedzenie" z Fitatu** - klient
+  (`scripts/test_fitatu.py`) istnieje, ale token z `.env` wygasa po godzinie
+  (JWT `exp`), a `FITATU_REFRESH_TOKEN` jest pusty - najpierw refresh flow.
+- [x] **Podsumowania dzienne i tygodniowe** - czterech specjalistów równolegle, komendy `/daily` i `/weekly`, CLI oraz opcjonalne joby cron w strefie Europe/Warsaw. Domyślnie wyłączone, żeby wdrożenie nie zaczęło wysyłać raportów bez decyzji użytkownika.
 
 ## Faza 5b - jakość/specjalizacja agentów (zgłoszone przez użytkownika)
 
@@ -40,13 +40,10 @@ dla reszty, jeden agent naraz:
 - [x] **NutritionCoach** - `get_nutrition_summary`/`get_energy_balance`/`find_foods`,
   `prompts/nutrition.md`.
 - [x] **BodyCompCoach** - `get_body_trend`, `prompts/body.md`.
-- [ ] Ograniczenie pydantic-ai: dwie output functions w jednej turze -> tylko
-  pierwsza się wykonuje (np. 'waga 87 i spaliłem 2600' zapisze jedno).
-  Jeśli będzie przeszkadzać: `log_manual_entries(list)` jak przy profilu.
-- [ ] **Pętla zwrotna z produkcji**: 👍/👎 pod odpowiedzią na Telegramie
-  (MessageReactionHandler w python-telegram-bot) zapisane przy `agent_runs`
-  (wymaga `message_id` w `conversations` - migracja). Bez tego każda zmiana
-  promptu opiera się na 6 syntetycznych pytaniach, nie na realnym użyciu.
+- [x] Ograniczenie pydantic-ai przy wielu wpisach rozwiązane przez jedną output
+  function `log_manual_entries(list)`: cała lista jest walidowana i zapisywana
+  atomowo, z payload-aware dedupem i zgodnością starego `log_manual_entry`.
+- [x] **Pętla zwrotna z produkcji**: 👍/👎 pod odpowiedzią na Telegramie, komentarz w reply, powiązanie `conversations` z korzeniem `agent_runs` oraz CLI `health-agent feedback`.
 - [ ] **Running na Haiku 4.5** - 3x `eval_agents.py running` (jest już sędzia,
   więc da się to uczciwie ocenić); jeśli 21/21 - kolejne ~40% taniej na
   najdroższym agencie.
@@ -127,9 +124,10 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 - [ ] **Wiadomości głosowe na Telegramie** - transkrypcja (Whisper) → ten sam
   pipeline. Największy zysk na siłowni ("ławka 4 na 8 po 80" między
   seriami).
-- [ ] **Samopoczucie rano (1-5) + notatki** - `kind="wellbeing"`/`"note"`
-  istnieją w `ManualLog`, ale nic ich nie czyta. Skorelować ze snem/HRV.
-  Także kontuzje/leki - recovery agent powinien o nich wiedzieć.
+- [x] **Samopoczucie rano (1-5) + notatki** - wpisy `wellbeing` są ściśle
+  walidowane w skali 1-5, a RecoveryAnalyst czyta historię ocen i notatek.
+- [ ] Skorelować samopoczucie ze snem/HRV; kontuzje i leki dodać do jawnego
+  kontraktu profilu/wiedzy, zamiast wyciągać je z dowolnych notatek.
 
 ## Niezawodność i dostęp
 
@@ -165,14 +163,17 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
   mają `restart: unless-stopped`. Są skrypty instalacji, diagnostyki i
   aktualizacji oraz instrukcja WSL/VPS. Backup nie zależy już od socketa
   Dockera. Restart procesów API i bota został sprawdzony wraz z healthcheckiem;
-  do wykonania operacyjnie pozostaje pełny restart hosta i test webhooka.
-- [ ] **Przenosiny na VPS/RPi (Faza 6) - ważniejsze niż się wydaje.**
-  Warstwa instalacyjna jest gotowa. Pozostaje przygotowanie hosta z Dockerem
-  i Tailscale, dump/restore, przełączenie URL webhooka i wyłączenie starej
-  instancji. Health Connect Webhook ma lookback 48h, więc do czasu migracji
-  wyłączony PC nadal oznacza ryzyko utraty danych.
-- [ ] **Backup poza dyskiem PC** - `backups/` leży na tym samym dysku co
-  baza. Sync do chmury / drugiego node'a Tailscale / innego urządzenia.
+  pełny restart VPS-a i test webhooka z telefonu również przeszły.
+- [x] **Przenosiny na VPS (Faza 6).** Host z Dockerem, reverse proxy HTTPS,
+  webhook i autostart są skonfigurowane; lokalny bot i scheduler production
+  zostały wyłączone. Szczegóły konkretnego hosta pozostają w ignorowanym
+  `VPS_LOCAL.md`, bez sekretów w repozytorium.
+- [x] **Rozdzielenie development/production.** `APP_ENV` identyfikuje
+  środowisko, `SCHEDULER_ENABLED` wyłącza lokalne zadania okresowe, a bot
+  pokazuje oba ustawienia w `/status`. Równoległy dev wymaga osobnego bota
+  i tokenu Telegrama.
+- [ ] **Backup poza VPS** - wolumen backupów leży na tym samym hoście co baza.
+  Sync do chmury / drugiego node'a Tailscale / innego urządzenia.
 - [ ] **Deterministyczne nudge'e** (nie LLM, reguły w schedulerze jak
   alerty): "4 dni bez treningu", "białko poniżej celu 3 dni z rzędu", "waga
   rośnie 2 tygodnie". Zero kosztu. Wymaga celów (pierwsza sekcja).
@@ -194,7 +195,6 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
   być tylko archiwizowane i porównywane wizualnie, nie interpretowane przez
   LLM (prywatność + niska wiarygodność takiej oceny).
 
-- Poranny/wieczorny raport dzienny - odrzucone jako szum (2026-09-16).
 - Faza 4 (bezpośrednie Suunto Cloud API) - tylko jeśli potrzebne Training
   Effect/VO2max; zatwierdzenie dla osób prywatnych niepewne.
 

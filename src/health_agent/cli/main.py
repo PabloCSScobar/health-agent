@@ -65,16 +65,105 @@ def cmd_knowledge(args: argparse.Namespace) -> None:
 
 
 def cmd_ingest_intervals(args: argparse.Namespace) -> None:
-    from health_agent.db.session import get_session
-    from health_agent.ingest.intervals import ingest_range
+    from health_agent.ingest.sync import sync_intervals
+    from health_agent.time_utils import local_today
 
     oldest = dt.date.fromisoformat(args.since)
-    newest = dt.date.fromisoformat(args.until) if args.until else dt.date.today()
+    newest = dt.date.fromisoformat(args.until) if args.until else local_today()
+    result = sync_intervals(oldest, newest)
+    print(json.dumps(result.__dict__, indent=2, ensure_ascii=False, default=str))
 
+
+
+def cmd_summary(args: argparse.Namespace) -> None:
+    import asyncio
+
+    from health_agent.agents.summaries import build_daily_summary, build_weekly_summary
+
+    if args.command == "daily":
+        day = dt.date.fromisoformat(args.date) if args.date else None
+        result = asyncio.run(build_daily_summary(day))
+    else:
+        result = asyncio.run(build_weekly_summary())
+    print(result.text)
+
+
+def _agent_run_tree(session, root_run_id: int | None) -> dict:
+    from sqlalchemy import select
+
+    from health_agent.db.models import AgentRun
+
+    if root_run_id is None:
+        return {"agents": [], "models": [], "tools": [], "cost_usd": None}
+    pending = [root_run_id]
+    rows = []
+    while pending:
+        batch = session.execute(select(AgentRun).where(AgentRun.id.in_(pending))).scalars().all()
+        rows.extend(batch)
+        parent_ids = [row.id for row in batch]
+        pending = list(
+            session.execute(select(AgentRun.id).where(AgentRun.parent_run_id.in_(parent_ids))).scalars()
+        )
+    costs = [row.cost_usd for row in rows if row.cost_usd is not None]
+    return {
+        "agents": list(dict.fromkeys(row.agent for row in rows)),
+        "models": list(dict.fromkeys(row.model for row in rows)),
+        "tools": [tool for row in rows for tool in (row.tools_called or [])],
+        "cost_usd": sum(costs) if costs else None,
+    }
+
+
+def cmd_feedback(args: argparse.Namespace) -> None:
+    from sqlalchemy import select
+
+    from health_agent.db.models import Conversation, Feedback
+    from health_agent.db.session import get_session
+
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
     with get_session() as session:
-        summary = ingest_range(session, oldest, newest)
+        stmt = (
+            select(Feedback, Conversation)
+            .join(Conversation, Conversation.id == Feedback.conversation_id)
+            .where(Feedback.updated_at >= since)
+            .order_by(Feedback.updated_at.desc())
+        )
+        if args.bad:
+            stmt = stmt.where(Feedback.rating == -1)
+        rows = session.execute(stmt).all()
+        output = []
+        for feedback, answer in rows:
+            tree = _agent_run_tree(session, feedback.agent_run_id)
+            question = None if answer.agent in {"daily", "weekly"} else session.execute(
+                select(Conversation.content)
+                .where(
+                    Conversation.chat_id == answer.chat_id,
+                    Conversation.role == "user",
+                    Conversation.created_at <= answer.created_at,
+                )
+                .order_by(Conversation.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            output.append(
+                "\n".join(
+                    [
+                        f"## {'👍' if feedback.rating > 0 else '👎'} {feedback.updated_at.isoformat()}",
+                        f"- agenci: {', '.join(tree['agents']) or answer.agent or '-'}",
+                        f"- modele: {', '.join(tree['models']) or '-'}",
+                        f"- narzędzia: {', '.join(tree['tools']) or '-'}",
+                        f"- koszt drzewa: ${tree['cost_usd']:.4f}" if tree["cost_usd"] is not None else "- koszt drzewa: -",
+                        f"- pytanie: {question or '-'}",
+                        f"- odpowiedź: {answer.content}",
+                        f"- komentarz: {feedback.comment or '-'}",
+                    ]
+                )
+            )
 
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    text = "\n\n".join(output) if output else "Brak feedbacku dla wybranych filtrów."
+    if args.export:
+        Path(args.export).write_text(text + "\n", encoding="utf-8")
+        print(f"Zapisano {len(output)} ocen: {args.export}")
+    else:
+        print(text)
 
 
 def main() -> None:
@@ -111,6 +200,19 @@ def main() -> None:
     chat = sub.add_parser("chat", help="Zadaj pytanie orchestratorowi (bez Telegrama, do testów)")
     chat.add_argument("question")
     chat.set_defaults(func=cmd_chat)
+
+    daily = sub.add_parser("daily", help="Wygeneruj podsumowanie dnia (bez wysyłki)")
+    daily.add_argument("--date", required=False, help="Dzień YYYY-MM-DD, domyślnie dziś")
+    daily.set_defaults(func=cmd_summary)
+
+    weekly = sub.add_parser("weekly", help="Wygeneruj podsumowanie bieżącego tygodnia (bez wysyłki)")
+    weekly.set_defaults(func=cmd_summary)
+
+    feedback = sub.add_parser("feedback", help="Pokaż oceny odpowiedzi z Telegrama")
+    feedback.add_argument("--days", type=int, default=30)
+    feedback.add_argument("--bad", action="store_true", help="tylko oceny 👎")
+    feedback.add_argument("--export", required=False, help="zapisz raport Markdown do pliku")
+    feedback.set_defaults(func=cmd_feedback)
 
     args = parser.parse_args()
     args.func(args)
