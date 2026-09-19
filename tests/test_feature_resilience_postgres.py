@@ -176,7 +176,9 @@ class FeatureResiliencePostgresTest(unittest.TestCase):
             self.assertEqual(dispatch_pending_notifications(now)["sent"], 0)
             self.assertEqual(SuccessfulBot.calls, 0)
             retry_unknown_notification(outbox_id)
-            self.assertEqual(dispatch_pending_notifications(now)["sent"], 1)
+            self.assertEqual(
+                dispatch_pending_notifications(now + dt.timedelta(hours=1))["sent"], 1
+            )
 
         self.assertEqual(SuccessfulBot.calls, 1)
         with get_session() as session:

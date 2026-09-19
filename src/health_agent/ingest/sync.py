@@ -14,7 +14,7 @@ from health_agent.db.session import get_session
 from health_agent.ingest.intervals import ingest_range
 from health_agent.time_utils import local_today
 
-POLL_LOOKBACK_DAYS = 3
+POLL_LOOKBACK_DAYS = 4
 POLL_MAX_BACKFILL_DAYS = 60
 INTERVALS_SOURCE = "intervals_icu"
 # Stała, przenośna między procesami wartość; nie używamy losowego hash() Pythona.

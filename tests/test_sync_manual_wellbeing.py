@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from health_agent.agents.registry import SPECIALISTS
 from health_agent.channels import telegram
-from health_agent.ingest.sync import POLL_MAX_BACKFILL_DAYS, _automatic_window
+from health_agent.ingest.sync import POLL_LOOKBACK_DAYS, POLL_MAX_BACKFILL_DAYS, _automatic_window
 from health_agent.tools import recovery
 from health_agent.tools.manual import ManualLogEntry, _format_confirmation
 from health_agent.tools.manual_batch import _signature, _validate
@@ -50,7 +50,7 @@ class SyncManualWellbeingTest(unittest.TestCase):
     def test_automatic_window_uses_overlap_and_reports_cap(self) -> None:
         today = dt.date(2026, 9, 19)
         oldest, truncated = _automatic_window(_WindowSession(None), today)
-        self.assertEqual(oldest, dt.date(2026, 9, 16))
+        self.assertEqual(oldest, today - dt.timedelta(days=POLL_LOOKBACK_DAYS))
         self.assertFalse(truncated)
 
         oldest, truncated = _automatic_window(_WindowSession(dt.date(2026, 1, 1)), today)

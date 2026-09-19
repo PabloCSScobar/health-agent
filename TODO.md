@@ -26,6 +26,12 @@ zagnieżdżony checkbox oznacza pozostały odbiór użytkownika.
   trwały outbox, retry i snooze z ponowną oceną warunku.
   - [ ] **Weryfikacja użytkownika:** utworzyć jedną prawdziwą regułę,
     potwierdzić dostarczenie na Telegramie oraz przyciski Wzięte/Pomiń/Snooze.
+- [x] **Proaktywne alerty** — jedna zbiorcza wiadomość o 20:00 dla: 96 h bez
+  treningu, 3 dni zapisanego białka poniżej celu oraz wzrostu średniej wagi
+  między dwoma tygodniami. Każdy temat ma przełącznik i 7-dniowy cooldown;
+  funkcja po migracji pozostaje wyłączona.
+  - [ ] **Weryfikacja użytkownika:** po wdrożeniu sprawdzić podgląd powodów
+    pominięcia na dashboardzie, następnie aktywować wybrane tematy.
 - [x] **Podsumowania dzienne i tygodniowe** — `/daily`, `/weekly`, CLI i
   opcjonalne harmonogramy w strefie Europe/Warsaw.
   - [ ] **Weryfikacja użytkownika:** ocenić po jednym raporcie na prawdziwych
@@ -59,7 +65,7 @@ zagnieżdżony checkbox oznacza pozostały odbiór użytkownika.
   poprawności liczb (nie widzi wyników narzędzi) - gdyby to było potrzebne:
   zapisywać wyniki narzędzi w `agent_runs` i dawać je sędziemu.
 - [x] **`/sync` Intervals.icu na Telegramie** - wspólny z schedulerem catch-up
-  (3 dni, zakładka od markera, limit 60 dni), blokada transakcyjna PostgreSQL
+  (4 dni, zakładka od markera, limit 60 dni), blokada transakcyjna PostgreSQL
   przeciw równoległym procesom i atomowy zapis audytu, danych oraz markera.
 - [ ] **Narzędzie "odśwież dzisiejsze jedzenie" z Fitatu** - klient
   (`scripts/test_fitatu.py`) istnieje, ale token z `.env` wygasa po godzinie
@@ -219,9 +225,8 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
   i tokenu Telegrama.
 - [ ] **Backup poza VPS** - wolumen backupów leży na tym samym hoście co baza.
   Sync do chmury / drugiego node'a Tailscale / innego urządzenia.
-- [ ] **Deterministyczne nudge'e** (nie LLM, reguły w schedulerze jak
-  alerty): "4 dni bez treningu", "białko poniżej celu 3 dni z rzędu", "waga
-  rośnie 2 tygodnie". Zero kosztu. Wymaga celów (pierwsza sekcja).
+- [x] **Deterministyczne alerty proaktywne** — wdrożone w kodzie; odbiór
+  użytkownika jest opisany w pierwszej sekcji.
 - [x] **Dashboard** - `/dash` za publicznym HTTPS i logowaniem Argon2id;
   zakresy 7/30/90 dni, korelacje, zdjęcia, suplementy i przypomnienia.
   Sesje są w PostgreSQL, mutacje mają CSRF i kontrolę Origin.

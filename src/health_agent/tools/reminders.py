@@ -313,7 +313,9 @@ def _rule_row(row: ReminderRule) -> dict:
 
 def list_reminder_rules(include_drafts: bool = True) -> list[dict]:
     with get_session() as session:
-        stmt = select(ReminderRule).order_by(ReminderRule.id)
+        stmt = select(ReminderRule).where(
+            ReminderRule.system_key.is_(None)
+        ).order_by(ReminderRule.id)
         if not include_drafts:
             stmt = stmt.where(ReminderRule.status != "draft")
         return [_rule_row(row) for row in session.execute(stmt).scalars().all()]
@@ -423,6 +425,9 @@ def materialize_due_occurrences(now: dt.datetime | None = None) -> int:
     now = now or dt.datetime.now(dt.timezone.utc)
     created = 0
     with get_session() as session:
+        from health_agent.tools.proactive_alerts import ensure_config
+
+        ensure_config(session)
         rules = session.execute(
             select(ReminderRule).where(ReminderRule.status == "active")
         ).scalars().all()
@@ -480,15 +485,49 @@ def evaluate_due_occurrences(now: dt.datetime | None = None) -> dict:
                 )
                 skipped += 1
                 continue
-            outcome = _condition_result(
-                session, rule, now, occurrence.scheduled_for
-            )
+            payload = None
+            if rule.kind == "proactive_alert":
+                from health_agent.db.models import ProactiveAlertEvent, ProactiveAlertSetting
+                from health_agent.tools.proactive_alerts import build_payload, evaluate_topics
+
+                topics = list(session.execute(
+                    select(ProactiveAlertSetting.topic).where(
+                        ProactiveAlertSetting.enabled.is_(True)
+                    ).order_by(ProactiveAlertSetting.topic)
+                ).scalars())
+                results = evaluate_topics(session, occurrence.scheduled_for, now, topics)
+                incomplete = any(item.status == "insufficient" for item in results)
+                triggered = [item for item in results if item.status == "triggered"]
+                if incomplete and now < occurrence.scheduled_for + dt.timedelta(hours=2):
+                    outcome = None
+                else:
+                    outcome = bool(triggered)
+                    if triggered:
+                        payload = build_payload(triggered)
+                        for item in triggered:
+                            session.execute(
+                                pg_insert(ProactiveAlertEvent).values(
+                                    occurrence_id=occurrence.id,
+                                    topic=item.topic,
+                                    details_json=item.details or {},
+                                    qualified_at=now,
+                                ).on_conflict_do_nothing(
+                                    constraint="uq_proactive_alert_event_topic"
+                                )
+                            )
+            else:
+                outcome = _condition_result(
+                    session, rule, now, occurrence.scheduled_for
+                )
             occurrence.evaluated_at = now
             occurrence.attempts += 1
             if outcome is None:
                 if now < occurrence.scheduled_for + dt.timedelta(hours=2):
                     occurrence.status = "retrying"
-                    occurrence.next_attempt_at = now + dt.timedelta(minutes=15)
+                    occurrence.next_attempt_at = min(
+                        now + dt.timedelta(minutes=15),
+                        occurrence.scheduled_for + dt.timedelta(hours=2),
+                    )
                     retried += 1
                 else:
                     occurrence.status = "skipped_stale"
@@ -509,15 +548,16 @@ def evaluate_due_occurrences(now: dt.datetime | None = None) -> dict:
                 skipped += 1
                 continue
             occurrence.status = "queued"
+            payload = payload or {
+                "text": f"⏰ {rule.title}",
+                "kind": rule.kind,
+                "supplement_id": (rule.payload_json or {}).get("supplement_id"),
+            }
             session.execute(
                 pg_insert(NotificationOutbox)
                 .values(
                     occurrence_id=occurrence.id,
-                    payload_json={
-                        "text": f"⏰ {rule.title}",
-                        "kind": rule.kind,
-                        "supplement_id": (rule.payload_json or {}).get("supplement_id"),
-                    },
+                    payload_json=payload,
                     status="pending",
                     attempts=0,
                     available_at=now,
@@ -525,13 +565,7 @@ def evaluate_due_occurrences(now: dt.datetime | None = None) -> dict:
                 .on_conflict_do_update(
                     constraint="uq_notification_outbox_occurrence",
                     set_={
-                        "payload_json": {
-                            "text": f"⏰ {rule.title}",
-                            "kind": rule.kind,
-                            "supplement_id": (rule.payload_json or {}).get(
-                                "supplement_id"
-                            ),
-                        },
+                        "payload_json": payload,
                         "status": "pending",
                         "available_at": now,
                         "sent_at": None,
@@ -608,7 +642,7 @@ def dispatch_pending_notifications(now: dt.datetime | None = None) -> dict:
         try:
             from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-            buttons = [
+            buttons = None if payload.get("kind") == "proactive_alert" else [
                 InlineKeyboardButton(
                     "Wzięte" if payload.get("kind") == "supplement" else "Zrobione",
                     callback_data=f"reminder:{occurrence_id}:taken"
@@ -624,7 +658,7 @@ def dispatch_pending_notifications(now: dt.datetime | None = None) -> dict:
                 await bot.send_message(
                     chat_id=settings.telegram_chat_id,
                     text=payload["text"],
-                    reply_markup=InlineKeyboardMarkup([buttons]),
+                    reply_markup=InlineKeyboardMarkup([buttons]) if buttons else None,
                 )
 
             asyncio.run(_send())

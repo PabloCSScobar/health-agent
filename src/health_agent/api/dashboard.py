@@ -27,6 +27,7 @@ from health_agent.tools.photos import (
     progress_photo_path,
     save_progress_photo,
 )
+from health_agent.tools.proactive_alerts import list_alert_settings, update_alert_setting
 from health_agent.tools.reminders import (
     activate_reminder_rule,
     add_supplement,
@@ -76,6 +77,10 @@ class ReminderBody(BaseModel):
     condition_threshold: float | None = None
     condition_window_hours: int | None = None
     supplement_id: int | None = None
+
+
+class ProactiveAlertUpdate(BaseModel):
+    enabled: bool
 
 
 class ReminderUpdate(BaseModel):
@@ -188,7 +193,7 @@ small{color:#526058}table{width:100%;border-collapse:collapse}td,th{text-align:l
 <header><h1>health-agent</h1><nav>
 <button onclick="showTab('overview')">Przegląd</button><button onclick="showTab('correlations')">Korelacje</button>
 <button onclick="showTab('photos')">Zdjęcia</button><button onclick="showTab('supplements')">Suplementy</button>
-<button onclick="showTab('reminders')">Przypomnienia</button><button onclick="logout()">Wyloguj</button></nav></header>
+<button onclick="showTab('reminders')">Przypomnienia</button><button onclick="showTab('alerts')">Proaktywne alerty</button><button onclick="logout()">Wyloguj</button></nav></header>
 <main>
 <section id="overview" class="tab"><div class="card"><label>Zakres <select id="days" onchange="loadOverview()"><option>7</option><option selected>30</option><option>90</option></select> dni</label>
 <div id="summary" class="grid"></div></div><div id="charts"></div></section>
@@ -205,12 +210,16 @@ small{color:#526058}table{width:100%;border-collapse:collapse}td,th{text-align:l
 <select id="remKind"><option value="text">tekst</option><option value="supplement">suplement</option><option value="run">bieg</option><option value="workout">trening</option></select>
 <select id="remCondition"><option value="">bez warunku</option><option value="steps_below">kroki poniżej</option><option value="protein_below">białko poniżej</option><option value="no_run">brak biegu</option><option value="no_workout">brak treningu</option></select>
 <input id="remThreshold" type="number" placeholder="Próg"><button onclick="addReminder()">Dodaj szkic</button>
-<table><tbody id="remList"></tbody></table></div></section></main>
+<table><tbody id="remList"></tbody></table></div></section>
+<section id="alerts" class="tab hidden"><div class="card"><h2>Proaktywne alerty</h2>
+<p><small>Jedna zbiorcza wiadomość o 20:00. Ten sam temat najwyżej raz na 7 dni. Funkcja jest domyślnie wyłączona.</small></p>
+<table><thead><tr><th>Temat</th><th>Bieżąca ocena</th><th>Powód</th><th></th></tr></thead><tbody id="alertSettings"></tbody></table></div>
+<div class="card"><h3>Historia zakwalifikowanych tematów</h3><table><tbody id="alertHistory"></tbody></table></div></section></main>
 <script>
 var csrf="";
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 async function api(path,opt){opt=opt||{};opt.headers=opt.headers||{};if(opt.method&&opt.method!="GET"){opt.headers["X-CSRF-Token"]=csrf}var r=await fetch("/dash/api"+path,opt);if(r.status==401){location="/dash";throw Error("auth")}var body=await r.json().catch(function(){return {}});if(!r.ok)throw Error(body.detail||"Błąd");return body}
-function showTab(id){document.querySelectorAll(".tab").forEach(function(x){x.classList.add("hidden")});document.getElementById(id).classList.remove("hidden");if(id=="correlations")loadCorrelations();if(id=="photos")loadPhotos();if(id=="supplements")loadSupplements();if(id=="reminders")loadReminders()}
+function showTab(id){document.querySelectorAll(".tab").forEach(function(x){x.classList.add("hidden")});document.getElementById(id).classList.remove("hidden");if(id=="correlations")loadCorrelations();if(id=="photos")loadPhotos();if(id=="supplements")loadSupplements();if(id=="reminders")loadReminders();if(id=="alerts")loadAlerts()}
 function chart(name,points,key){var vals=points.map(function(x){return x[key]}).filter(function(x){return x!=null});var max=Math.max.apply(null,vals.concat([1]));return '<div class="card"><h3>'+name+'</h3><div class="chart">'+points.map(function(x){return '<div class="bar" title="'+x.date+': '+(x[key]==null?'brak':x[key])+'" style="height:'+((x[key]||0)/max*100)+'%"></div>'}).join("")+'</div></div>'}
 async function loadOverview(){var data=await api("/overview?days="+document.getElementById("days").value);csrf=data.csrf;document.getElementById("summary").innerHTML=Object.keys(data.latest).map(function(k){return '<div><b>'+esc(k)+'</b><br>'+(data.latest[k]==null?'brak':data.latest[k])+'</div>'}).join("");document.getElementById("charts").innerHTML=chart("Waga (kg)",data.series,"weight_kg")+chart("Sen (h)",data.series,"sleep_h")+chart("HRV",data.series,"hrv")+chart("Kroki",data.series,"steps")+chart("Kilometry biegu",data.series,"run_km")+chart("Białko (g)",data.series,"protein_g")}
 async function loadCorrelations(){var data=await api("/correlations");document.getElementById("corr").innerHTML=data.map(function(x){return '<p><b>'+x.label+'</b>: rho '+(x.rho==null?'—':x.rho)+', n='+x.n+' <small>'+x.status+'</small></p>'}).join("")}
@@ -226,6 +235,8 @@ async function addReminder(){var c=document.getElementById("remCondition").value
 async function activateReminder(id){await api("/reminders/"+id+"/activate",{method:"POST"});loadReminders()}
 async function toggleReminder(id,status){await api("/reminders/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:status})});loadReminders()}
 async function retryOutbox(id){await api("/outbox/"+id+"/retry",{method:"POST"});loadReminders()}
+async function loadAlerts(){var data=await api("/proactive-alerts");document.getElementById("alertSettings").innerHTML=data.settings.map(function(x){return '<tr><td>'+esc(x.label)+'</td><td>'+esc(x.evaluation.status)+'</td><td>'+esc(x.evaluation.reason)+'</td><td><button onclick="toggleAlert(&quot;'+x.topic+'&quot;,'+(!x.enabled)+')">'+(x.enabled?'Wstrzymaj':'Aktywuj')+'</button></td></tr>'}).join("");document.getElementById("alertHistory").innerHTML=data.history.map(function(x){return '<tr><td>'+esc(x.label)+'</td><td>'+esc(new Date(x.qualified_at).toLocaleString())+'</td><td>'+esc(x.delivery_status)+'</td></tr>'}).join("")}
+async function toggleAlert(topic,enabled){await api("/proactive-alerts/"+topic,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:enabled})});loadAlerts()}
 async function logout(){await api("/logout",{method:"POST"});location="/dash"}
 document.getElementById("photoDate").value=new Date().toISOString().slice(0,10);loadOverview();
 </script></html>"""
@@ -391,6 +402,20 @@ def supplement_intake(
             record_supplement_intake, supplement_id, body.status, note=body.note
         )
     }
+
+
+@router.get("/api/proactive-alerts")
+def proactive_alerts(auth: DashboardSession = Depends(_current_session)) -> dict:
+    return list_alert_settings()
+
+
+@router.patch("/api/proactive-alerts/{topic}")
+def patch_proactive_alert(
+    topic: str, body: ProactiveAlertUpdate, request: Request,
+    auth: DashboardSession = Depends(_current_session),
+) -> dict:
+    _validate_mutation(request, auth)
+    return _service_call(update_alert_setting, topic, body.enabled)
 
 
 @router.get("/api/reminders")

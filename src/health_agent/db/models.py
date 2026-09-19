@@ -409,6 +409,7 @@ class ReminderRule(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    system_key: Mapped[str | None] = mapped_column(String(64), unique=True)
     kind: Mapped[str] = mapped_column(String(32), index=True)
     title: Mapped[str] = mapped_column(String(256))
     local_time: Mapped[str] = mapped_column(String(5))
@@ -473,3 +474,54 @@ class DataFreshness(Base):
     source: Mapped[str] = mapped_column(String(32))
     observed_through: Mapped[dt.date] = mapped_column(Date)
     received_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class DataSyncRange(Base):
+    """Zakres, który źródło pomyślnie odczytało, także gdy nie było rekordów."""
+
+    __tablename__ = "data_sync_ranges"
+    __table_args__ = (
+        UniqueConstraint(
+            "metric", "source", "range_start", "range_end",
+            name="uq_data_sync_range",
+        ),
+        CheckConstraint("range_start <= range_end", name="ck_data_sync_range_order"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    metric: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(32))
+    range_start: Mapped[dt.date] = mapped_column(Date)
+    range_end: Mapped[dt.date] = mapped_column(Date)
+    received_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ProactiveAlertSetting(Base):
+    __tablename__ = "proactive_alert_settings"
+
+    topic: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class ProactiveAlertEvent(Base):
+    """Temat zakwalifikowany do konkretnej zbiorczej wiadomości."""
+
+    __tablename__ = "proactive_alert_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "occurrence_id", "topic", name="uq_proactive_alert_event_topic"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("reminder_occurrences.id", ondelete="CASCADE"), index=True
+    )
+    topic: Mapped[str] = mapped_column(String(32), index=True)
+    details_json: Mapped[dict] = mapped_column(JSON)
+    qualified_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )

@@ -119,6 +119,9 @@ uv run uvicorn health_agent.api.app:app --host 0.0.0.0 --port 8000 \
 API udostępnia `GET /health`, `POST /webhook/healthconnect` oraz
 uwierzytelniony dashboard `GET /dash`. Dashboard ma sesje w PostgreSQL,
 ochronę CSRF/Origin, limit prób logowania i prywatne endpointy zdjęć.
+Sekcja „Proaktywne alerty” pokazuje ocenę trzech deterministycznych reguł,
+historię wysyłek i przełączniki tematów. Wszystkie są domyślnie wyłączone;
+wiadomość zbiorcza jest oceniana o 20:00 Europe/Warsaw przez istniejący outbox.
 W production webhook odmawia pracy, jeśli `WEBHOOK_SHARED_SECRET` nie jest
 ustawiony.
 `/health` sprawdza odpowiedź procesu, nie bazę ani świeżość danych.

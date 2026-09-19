@@ -93,7 +93,10 @@ konfiguruje YAML; nie kopiuj zmiennych nazw modeli do instrukcji.
   wolumenie. `supplements` i `supplement_intakes` przechowują listę oraz log.
 - `reminder_rules`, `reminder_occurrences` i `notification_outbox`
   zapewniają trwałość i deduplikację; `data_freshness` odróżnia czas odbioru
-  od dnia obserwacji. Nieznany lub stary pomiar nigdy nie staje się zerem.
+  od dnia obserwacji. `data_sync_ranges` potwierdza również cały odczytany
+  zakres, nawet gdy nie było treningów. Ustawienia i historia tematów
+  proaktywnych są w `proactive_alert_settings` i `proactive_alert_events`.
+  Nieznany lub stary pomiar nigdy nie staje się zerem.
 
 Ta pamięć aplikacji opisuje użytkownika i jego dane zdrowotne. Kontekst
 agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
@@ -106,7 +109,7 @@ agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
 - Dzień żywienia wyznacza `end_time` całodobowego rekordu Fitatu.
   To konwencja źródła, nie rzeczywisty czas posiłku; `meal` nie jest
   podstawą wiarygodnego wykrywania obiadu/kolacji.
-- Polling i `/sync` mają okno 3 dni, rozszerzane od ostatniego udanego syncu
+- Polling i `/sync` mają okno 4 dni, rozszerzane od ostatniego udanego syncu
   z zakładką, maksymalnie 60 dni. Wspólna blokada advisory PostgreSQL zapobiega
   równoległemu zapisowi schedulera i bota. Większa luka wymaga ręcznego ingestu.
 - Scheduler żyje w API i startuje tylko przy `SCHEDULER_ENABLED=true`.
@@ -114,8 +117,9 @@ agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
   granic dnia sprawdzaj UTC/Europe/Warsaw.
 - Development i production mają osobne bazy oraz boty/tokeny Telegrama.
   Wspólny token przy dwóch procesach long polling powoduje konflikt.
-- Alerty oceniają daty ostatniego treningu/wagi/żywienia, nie pełny stan
-  wszystkich integracji. Nie są niezależnym monitoringiem awarii API.
+- Alert braku treningu wymaga świeżego zakresu Intervals obejmującego pełne
+  96 godzin i uwzględnia ręczne wpisy siłowe. Białko dotyczy zapisanych danych,
+  a alert wagi tylko celu redukcji. To obserwacje, nie monitoring ani diagnoza.
 - Ewaluacja usuwa `agent_runs` i ingeruje w dane; wymaga `APP_ENV=test`, a
   `all` nie obejmuje coaches/import.
 - `undo-import` nie przywraca profilu. Część przywracania nieaktywnych
@@ -135,6 +139,6 @@ w nim warunkowy, a bot jest osobną usługą. Docker i warstwa HTTPS pozostają
 usługami hosta.
 Feedback reakcji Telegram, opcjonalne podsumowania, `/sync` Intervals.icu,
 atomowe wpisy zbiorcze, historia samopoczucia, korelacje, dashboard,
-lokalne zdjęcia, suplementy i trwałe przypomnienia są gotowe w kodzie.
+lokalne zdjęcia, suplementy, trwałe przypomnienia i proaktywne alerty są gotowe w kodzie.
 Brak jeszcze produkcyjnego ingestora Fitatu API i obsługi głosu.
 Przed rozpoczęciem tych zadań sprawdź `TODO.md` i `PLAN.md`.

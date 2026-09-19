@@ -41,4 +41,5 @@ TEST_POSTGRES_CONTAINER="$test_container" \
     uv run --frozen --no-sync python -m unittest -v \
         tests.test_feature_stack_postgres \
         tests.test_feature_resilience_postgres \
+        tests.test_proactive_alerts_postgres \
         tests.test_backup_restore_postgres

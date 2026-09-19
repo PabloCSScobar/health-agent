@@ -217,6 +217,13 @@ SHA-256 i nie są narzędziem LLM. Reguły przypomnień mają szkic z jawnym
 potwierdzeniem, świeżość danych, trwałe wystąpienia/outbox i ręczny retry
 niepewnej wysyłki.
 
+**Proaktywne alerty (WDROŻONE W KODZIE 2026-09-19):** deterministycznie
+oceniają 96 h bez treningu, trzy zakończone dni białka poniżej celu i zmianę
+średniej wagi między dwoma tygodniami. Korzystają ze wspólnego outboxu,
+blokad i historii tematów, mają 7-dniowy cooldown oraz przełączniki na
+dashboardzie. Migracja pozostawia wszystkie tematy wyłączone; po aktualizacji
+VPS najpierw sprawdzić podgląd, potem aktywować wybrane reguły.
+
 **Wiadomości głosowe:** `filters.VOICE` -> ogg -> transkrypcja lokalnie
 (`faster-whisper`, model `small`, polski OK, CPU kilka sekund; zero danych
 na zewnątrz poza tym, co i tak idzie do Anthropic jako tekst) -> ten sam

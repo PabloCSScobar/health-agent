@@ -271,8 +271,8 @@ class FeatureStackPostgresTest(unittest.TestCase):
                 select(ReminderOccurrence.id).where(ReminderOccurrence.rule_id == rule_id)
             ).scalar_one()
         complete_occurrence(occurrence_id, "snooze")
-        later = now + dt.timedelta(minutes=31)
         with get_session() as session:
+            later = session.get(ReminderOccurrence, occurrence_id).next_attempt_at + dt.timedelta(minutes=1)
             activity = session.execute(
                 select(DailyActivity).where(
                     DailyActivity.source == "test", DailyActivity.date == day
@@ -310,6 +310,22 @@ class FeatureStackPostgresTest(unittest.TestCase):
             self.assertEqual(overview.status_code, 200)
             csrf = overview.json()["csrf"]
             payload = {"name": "Test", "dose": "1"}
+            self.assertEqual(client.get("/dash/api/proactive-alerts").status_code, 200)
+            self.assertEqual(
+                client.patch(
+                    "/dash/api/proactive-alerts/low_protein",
+                    json={"enabled": False},
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.patch(
+                    "/dash/api/proactive-alerts/low_protein",
+                    json={"enabled": False},
+                    headers={"X-CSRF-Token": csrf, "Origin": "http://testserver"},
+                ).status_code,
+                200,
+            )
             self.assertEqual(
                 client.post("/dash/api/supplements", json=payload).status_code,
                 403,

@@ -147,10 +147,12 @@ def ingest_range(session: Session, oldest: dt.date, newest: dt.date) -> dict:
     for day_row in wellness:
         _upsert_wellness(session, day_row)
 
+    from health_agent.tools.proactive_alerts import mark_sync_range
     from health_agent.tools.reminders import mark_data_freshness
 
     now = dt.datetime.now(dt.timezone.utc)
     mark_data_freshness(session, "workouts", SOURCE, newest, now)
+    mark_sync_range(session, "workouts", SOURCE, oldest, newest, now)
     mark_data_freshness(session, "steps", SOURCE, newest, now)
     mark_data_freshness(session, "sleep", SOURCE, newest, now)
     mark_data_freshness(session, "hrv", SOURCE, newest, now)
