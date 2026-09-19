@@ -1,9 +1,50 @@
 # TODO / pomysły na rozwój
 
 Stan na 2026-09-19. Plan implementacji otwartych punktów: `PLAN.md`. Fazy 0-3 z planu zakończone (MVP działa: ingestia, agenci,
-Telegram, alerty, backup). Poniżej wszystko, co jeszcze nie jest zrobione -
-z planu i z burzy mózgów. Kolejność w sekcjach = sugerowany priorytet.
+Telegram, alerty, backup). Dokument rozróżnia funkcje gotowe technicznie,
+ale jeszcze nieodebrane przez użytkownika, od faktycznie otwartego backlogu.
+Kolejność w sekcjach = sugerowany priorytet.
 Historia decyzji i znalezisk technicznych: `scripts/README.md`.
+
+## Gotowe technicznie — wymagają weryfikacji użytkownika
+
+Pakiet jest zaimplementowany i pokryty testami (`56f46c4`, `374eb44`,
+`c68087b`), ale poniższe punkty wymagają wdrożenia aktualnych commitów na VPS
+albo oceny na rzeczywistych danych. Checkbox główny oznacza ukończony kod;
+zagnieżdżony checkbox oznacza pozostały odbiór użytkownika.
+
+- [x] **Dashboard i dostęp** — logowanie Argon2id, sesje, CSRF/Origin,
+  wykresy oraz zarządzanie zdjęciami, suplementami i przypomnieniami.
+  - [ ] **Weryfikacja użytkownika:** po wdrożeniu ustawić hash hasła, zalogować
+    się przez publiczny HTTPS i ocenić dashboard na telefonie.
+- [x] **Zdjęcia sylwetki** — Telegram, dashboard, deduplikacja, usuwanie,
+  lokalny backup z manifestem SHA-256; zdjęcia nie trafiają do LLM.
+  - [ ] **Weryfikacja użytkownika:** wysłać prawdziwe zdjęcie z podpisem,
+    sprawdzić widok `/foto` i porównanie w dashboardzie, następnie usunąć
+    zdjęcie testowe.
+- [x] **Suplementy i przypomnienia** — CRUD, szkic z potwierdzeniem, warunki,
+  trwały outbox, retry i snooze z ponowną oceną warunku.
+  - [ ] **Weryfikacja użytkownika:** utworzyć jedną prawdziwą regułę,
+    potwierdzić dostarczenie na Telegramie oraz przyciski Wzięte/Pomiń/Snooze.
+- [x] **Podsumowania dzienne i tygodniowe** — `/daily`, `/weekly`, CLI i
+  opcjonalne harmonogramy w strefie Europe/Warsaw.
+  - [ ] **Weryfikacja użytkownika:** ocenić po jednym raporcie na prawdziwych
+    danych oraz zdecydować, które harmonogramy i godziny włączyć na VPS.
+- [x] **Feedback produkcyjny** — reakcje 👍/👎, komentarz w odpowiedzi oraz
+  raport CLI powiązany z drzewem `agent_runs`.
+  - [ ] **Weryfikacja użytkownika:** ocenić odpowiedź bota reakcją i
+    komentarzem, a potem potwierdzić obecność wpisu w raporcie feedbacku.
+- [x] **Analiza korelacji** — pięć deterministycznych par Spearmana,
+  wersjonowanie i ostrożna publikacja do `knowledge`.
+  - [ ] **Weryfikacja użytkownika:** uruchomić pierwszy wynik na prawdziwych
+    danych bez automatycznej publikacji; po ocenie zdecydować o niedzielnym jobie.
+- [x] **StrengthCoach** — parser, e1RM, objętość, rekordy i grupy mięśniowe.
+  - [ ] **Weryfikacja użytkownika:** po kilku prawdziwych wpisach siłowych
+    porównać podsumowanie z własnym dziennikiem treningowym.
+- [x] **Backup i restore bieżącego pakietu** — test integracyjny wykonuje
+  prawdziwy `pg_dump`, restore do nowej bazy oraz kontrolę SHA-256 zdjęcia.
+  - [ ] **Weryfikacja użytkownika:** po wdrożeniu wykonać jeden ręczny backup
+    na VPS i potwierdzić widoczność obu artefaktów w wolumenie backupów.
 
 ## Rekomendowane jako następne (duża wartość, mały koszt)
 
