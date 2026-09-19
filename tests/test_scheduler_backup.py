@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gzip
+import json
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,7 @@ class BackupDatabaseTest(unittest.TestCase):
                 patch.object(scheduler.settings, "database_url", database_url),
                 patch.object(scheduler.settings, "backup_dir", tmp_dir),
                 patch.object(scheduler.settings, "backup_enabled", True),
+                patch.object(scheduler.settings, "progress_photos_dir", str(Path(tmp_dir) / "photos")),
                 patch.object(
                     scheduler.subprocess,
                     "run",
@@ -31,6 +34,12 @@ class BackupDatabaseTest(unittest.TestCase):
             self.assertEqual(result, backup_files[0])
             with gzip.open(backup_files[0], "rb") as backup:
                 self.assertEqual(backup.read(), b"-- synthetic dump --")
+            photo_archives = list(Path(tmp_dir).glob("health_agent_*.photos.tar.gz"))
+            self.assertEqual(len(photo_archives), 1)
+            with tarfile.open(photo_archives[0], "r:gz") as archive:
+                manifest = json.load(archive.extractfile("manifest.json"))
+            self.assertEqual(manifest["photos"], [])
+            self.assertEqual(manifest["database_backup"], backup_files[0].name)
 
             command = run.call_args.args[0]
             self.assertEqual(command[0], "pg_dump")

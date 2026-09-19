@@ -80,7 +80,13 @@ Uzupełnij `.env` lokalnie. Pełny zestaw ustawień definiuje
   i production muszą mieć osobne tokeny botów, jeśli działają równocześnie.
 - `WEBHOOK_SHARED_SECRET` — wspólna wartość z nagłówkiem `X-Webhook-Secret`
   w aplikacji telefonu. Ustaw przed udostępnieniem webhooka.
-- `ALERTS_*`, `BACKUP_*`, `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*` — opcje schedulera; podsumowania są domyślnie wyłączone, a ich strefę ustawia `SUMMARY_TIMEZONE`.
+- `DASHBOARD_PASSWORD_HASH` — hash Argon2id generowany przez
+  `health-agent hash-password`; w pliku `.env` ujmij go w pojedyncze
+  cudzysłowy, aby znaki `$` pozostały literalne.
+- `ALERTS_*`, `BACKUP_*`, `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*`,
+  `CORRELATIONS_*`, `REMINDERS_*` — opcje schedulera; raporty i korelacje są
+  domyślnie wyłączone, przypomnienia są włączone, ale działają dopiero po
+  utworzeniu i potwierdzeniu reguły.
 - `FITATU_*` — obecnie dla eksperymentalnego skryptu API, nie głównej ingestii.
 
 W natywnym trybie deweloperskim można uruchomić tylko bazę i zastosować migracje:
@@ -110,7 +116,11 @@ uv run uvicorn health_agent.api.app:app --host 0.0.0.0 --port 8000 \
   --ssl-certfile secrets/tailscale.crt --ssl-keyfile secrets/tailscale.key
 ```
 
-API udostępnia `GET /health` i `POST /webhook/healthconnect`.
+API udostępnia `GET /health`, `POST /webhook/healthconnect` oraz
+uwierzytelniony dashboard `GET /dash`. Dashboard ma sesje w PostgreSQL,
+ochronę CSRF/Origin, limit prób logowania i prywatne endpointy zdjęć.
+W production webhook odmawia pracy, jeśli `WEBHOOK_SHARED_SECRET` nie jest
+ustawiony.
 `/health` sprawdza odpowiedź procesu, nie bazę ani świeżość danych.
 Gdy `SCHEDULER_ENABLED=true`, lifespan uruchamia polling Intervals.icu,
 alerty i domyślnie backup. Uruchamiaj wtedy jedną instancję API; wiele
@@ -123,13 +133,19 @@ W osobnym terminalu bot (long polling):
 uv run python -m health_agent.channels.telegram
 ```
 
-Obsługuje tekst, import dokumentów tekstowych oraz `/status`, `/cost`,
-`/profil`, `/sync`, `/daily` i `/weekly`. `/sync` uruchamia ten sam
+Obsługuje tekst, zdjęcia sylwetki, import dokumentów tekstowych oraz
+`/status`, `/cost`, `/profil`, `/sync`, `/daily`, `/weekly`,
+`/foto`, `/suple` i `/przypomnienia`. `/sync` uruchamia ten sam
 bezpieczny catch-up Intervals.icu co scheduler; nie odświeża jeszcze żywienia
 z Fitatu. `/status` pokazuje również środowisko i stan
 schedulera. Reakcje 👍/👎 na odpowiedzi zapisują feedback; komentarz można
 dodać jako reply zaczynający się od 👍, 👎 albo `feedback:`. Nie uruchamiaj
 dwóch botów z tym samym tokenem; utwórz osobny bot przez BotFather dla dev.
+Podpis zdjęcia ma format np. `przód 2026-09-19 rano`; `/foto przód`
+pokazuje ostatnie ujęcia z wagą i procentem tłuszczu. Zdjęcia nie są
+udostępniane agentom. Prośba o przypomnienie tworzy szkic i wymaga kliknięcia
+`Aktywuj`; wysłane przypomnienia mają przyciski wykonania, pominięcia i
+odroczenia o 30 minut.
 
 Przy aktualizacji starszego lokalnego `.env`, który nie ma jeszcze
 `APP_ENV`, najpierw utwórz osobnego bota dev i wpisz jego token, a następnie
@@ -152,6 +168,9 @@ uv run health-agent chat "Podsumuj ostatni tydzień biegania"
 uv run health-agent daily
 uv run health-agent weekly
 uv run health-agent feedback --bad --days 30
+uv run health-agent correlations
+uv run health-agent correlations --publish
+uv run health-agent hash-password
 uv run health-agent ingest intervals --since 2026-09-01 --until 2026-09-07
 uv run health-agent ingest healthconnect --file /tmp/synthetic-healthconnect.json
 uv run health-agent import /tmp/synthetic-note.md --title "Notatka testowa" --date 2026-09-01
@@ -198,16 +217,17 @@ odpowiedzi, nie stanowi dowodu poprawności wszystkich liczb.
 
 ## Dane i utrzymanie
 
-`.env`, `.venv/`, `secrets/` i `backups/` są ignorowane przez Git.
+`.env`, `.venv/`, `secrets/`, `backups/` i `data/` są ignorowane przez Git.
 Nie umieszczaj danych zdrowotnych ani kluczy w dokumentacji i fixture'ach.
 Domyślne modele aplikacji korzystają z Anthropic: treść pytań i kontekst
 przekazany modelom mogą opuszczać komputer. Planowane zdjęcia sylwetki
 mają pozostać poza analizą LLM zgodnie z decyzją użytkownika.
 
 Backup w schedulerze robi `pg_dump` bazy wskazanej przez `DATABASE_URL`
-(domyślnie co 24h, retencja 14 dni, także przy starcie). W Compose zapisuje
-gzip w nazwanym wolumenie `health_agent_backups`; przy uruchomieniu natywnym
-domyślnie używa katalogu `backups/`.
+oraz osobne archiwum zdjęć z manifestem SHA-256 (domyślnie co 24h,
+retencja 14 dni, także przy starcie). W Compose zapisuje pliki w nazwanym
+wolumenie `health_agent_backups`; zdjęcia robocze są w osobnym,
+współdzielonym wolumenie `health_agent_photos`.
 Backup na tym samym hoście nie jest kopią poza VPS-em.
 
 Przed przekazaniem pracy między Codex i Claude Code zatrzymaj edycję w jednym

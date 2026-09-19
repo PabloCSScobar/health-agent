@@ -151,48 +151,24 @@ wywoływać tylko na żądanie.
 
 ---
 
-## 5. Analiza korelacji -> `knowledge` (lekcje)
+## 5. Analiza korelacji -> `knowledge` (WDROŻONE W KODZIE 2026-09-19)
 
-**Cel:** wzorce "u Ciebie" ("po <6h snu EF spada", "HRV spada po 2 mocnych
-dniach") liczone z danych, nie zgadywane, trafiają do digestu specjalistów
-jako `lekcja` z liczbą obserwacji.
+Deterministyczny frame 84 dni obejmuje sen, HRV, samopoczucie, kroki,
+biegi, wagę i żywienie. Analizowane jest pięć jawnych par: sen–HRV,
+sen–samopoczucie, sen–efektywność biegu, obciążenie z dwóch poprzednich dni
+–HRV oraz pora biegu–sen następnej nocy.
 
-**Decyzja:** statystyka deterministycznie w Pythonie (Spearman na
-rangach, n>=10, |rho|>=0.4, p<0.05 z aproksymacją t; bez scipy), LLM
-(Haiku) tylko formułuje zdanie i rozstrzyga, czy to nowa lekcja czy
-aktualizacja istniejącej. Zero "korelacji" z 5 punktów.
+Spearman obsługuje remisy bez SciPy. Mniej niż 20 kompletnych par albo stała
+seria daje `insufficient_data`; publikacja wymaga `|rho|>=0.4`.
+Kwalifikujący wynik trafia do wersjonowanego `correlation_results` i jako
+jedna aktywna `knowledge(kind="lekcja", confidence="low")` na parę.
+Tekst jawnie mówi o obserwacji eksploracyjnej, brakach danych i braku
+przyczynowości. LLM nie uczestniczy w obliczeniu ani publikacji.
 
-**Kroki:**
-1. `tools/correlations.py`: `daily_frame(weeks=12)` - jeden wiersz na
-   dzień: sleep_h, sleep_score, hrv, rhr, steps, run_km, run_load,
-   run_ef (śr. z biegów dnia), run_start_hour (najpóźniejszy trening),
-   kcal, protein_g, balance_kcal, weight (średnia 7d). Źródła: istniejące
-   narzędzia recovery/running/nutrition/body - nie nowe zapytania.
-2. Lista par z opóźnieniem (jawna, nie "wszystko ze wszystkim" - inaczej
-   fałszywe odkrycia): sleep_h[t-1]->hrv[t]; sleep_h[t-1]->run_ef[t];
-   run_load[t-1]+[t-2]->hrv[t]; run_start_hour[t]->sleep_score[t+1];
-   balance_kcal (śr. 7d)->weight slope; protein_g[t-1]->run_ef[t];
-   steps[t]->sleep_score[t+1]. `compute_correlations()` -> lista
-   {pair, n, rho, p, direction, example_days}.
-3. Job niedzielny (scheduler, konfigurowalny `CORRELATIONS_ENABLED`):
-   istotne pary -> Haiku formułuje 1 zdanie po polsku z n i kierunkiem ->
-   `add_knowledge(domain wg pary, kind="lekcja", source_type="agent",
-   source_agent="correlations", confidence wg p)`; poprzednia lekcja tej
-   samej pary -> `supersede`. Nieistotne po wcześniejszej istotnej ->
-   dezaktywuj (wzorzec zniknął) z logiem.
-4. Narzędzie `get_correlations()` dla recovery/running/nutrition (pełne
-   liczby, nie tylko zdanie z digestu). CLI `health-agent correlations`
-   (bez zapisu, do podglądu).
-5. Eval: syntetyczny frame z wbudowaną korelacją -> wykryta; losowy ->
-   nic; n<10 -> nic; lekcja zapisana raz, drugi przebieg = update nie
-   duplikat.
-
-**Weryfikacja na prawdziwych danych:** dziś ~35 dni wellness + 15 biegów +
-2 dni jedzenia - większość par jeszcze nie osiągnie n>=10 z jedzeniem;
-sleep->hrv i load->hrv już tak. Wynik pierwszego przebiegu obejrzeć ręcznie
-przed włączeniem joba.
-
-**Koszt:** ~$0.01/tydz. (Haiku, kilka zdań).
+CLI `health-agent correlations` liczy bez zapisu, a `--publish` zapisuje.
+Opcjonalny job niedzielny o 19:00 jest domyślnie wyłączony do ręcznego
+przeglądu pierwszego wyniku. Test syntetyczny oraz izolowany PostgreSQL 16
+potwierdzają próg, remisy i idempotencję okresu.
 
 ---
 
@@ -223,41 +199,29 @@ $0.10-0.15).
 
 ## Zależności i kolejność
 
-Punkty 1, 2, część Intervals z 4 oraz 6 są gotowe. Następny samodzielny krok
-to 5 (korelacje); punkt 3 (Haiku) jest niezależnym eksperymentem płatnym.
-Część Fitatu z 4 pozostaje zablokowana przez poświadczenia i decyzję o
-nieoficjalnym API. Po zmianach promptów/modeli: odpowiedni `eval_agents.py`
-na osobnej bazie testowej, następnie commit.
+Punkty 1, 2, część Intervals z 4, 5 i 6 są gotowe. W tym samym pakiecie
+powstały dashboard, archiwum zdjęć, suplementy oraz trwałe przypomnienia.
+Przed wdrożeniem trzeba ustawić hash hasła, zastosować migrację i ręcznie
+obejrzeć pierwszy wynik `health-agent correlations`; dopiero potem można
+włączyć cotygodniową publikację. Punkt 3 (Haiku) pozostaje niezależnym
+eksperymentem płatnym. Fitatu z punktu 4 nadal jest zablokowane.
 
 ---
 
-## Odłożone - szkice, żeby nie planować od zera później
+## Dalsze kroki
 
-**Suplementy:** tabela `supplements` (nazwa, dawka, pora: `HH:MM` |
-`meal:lunch`, aktywny), `supplement_log` (data, wzięty/pominięty);
-przypomnienie o stałej porze = cron w schedulerze + `_send_telegram_message`
-z pytaniem "wziąłeś? tak/nie" (odpowiedź parsuje orchestrator jak wpis);
-"do obiadu" = heurystyka: nowe `nutrition_items` dziś w oknie 12-15 (po
-pkt 4 - z API Fitatu jest typ posiłku, więc heurystyka staje się faktem).
-NutritionCoach dostaje `get_supplements()`.
-
-**Zdjęcia sylwetki (bez analizy):** `MessageHandler(filters.PHOTO)` ->
-`data/photos/YYYY-MM-DD_<typ>.jpg` (gitignored), tabela `progress_photos`
-(data, typ z podpisu: przód/bok/tył, waga i %tłuszczu z tego dnia z
-`body_composition`, notatka); `/foto przód` -> album ostatnich N tego typu
-z podpisami (waga, data). Backup: katalog dopisać do `backup_database`
-(tar obok dumpu).
+Dashboard `/dash` ma logowanie Argon2id, sesje DB, CSRF/Origin, wykresy
+7/30/90 dni oraz zarządzanie zdjęciami, suplementami i przypomnieniami.
+Zdjęcia z Telegrama i dashboardu pozostają lokalne, są deduplikowane po
+SHA-256 i nie są narzędziem LLM. Reguły przypomnień mają szkic z jawnym
+potwierdzeniem, świeżość danych, trwałe wystąpienia/outbox i ręczny retry
+niepewnej wysyłki.
 
 **Wiadomości głosowe:** `filters.VOICE` -> ogg -> transkrypcja lokalnie
 (`faster-whisper`, model `small`, polski OK, CPU kilka sekund; zero danych
 na zewnątrz poza tym, co i tak idzie do Anthropic jako tekst) -> ten sam
 `handle_message`. Zależność: ffmpeg. Pokazać transkrypcję nad odpowiedzią,
 żeby błąd rozpoznania był widoczny ("ławka 4x8 80" vs "4x8 18").
-
-**Dashboard:** FastAPI `GET /dash` (za Tailscale, bez auth poza siecią) -
-jeden plik HTML, wykresy z danych przez `GET /api/series?metric=...`
-(waga 7d, HRV z bazą, km/tydz., bilans, zdjęcia obok siebie). Bez
-frameworka; odświeżanie ręczne.
 
 **Backup poza VPS:** po `backup_database` kopiować zaszyfrowany dump do
 prywatnego storage'u obiektowego przez `restic`/`rclone` albo przez `scp`

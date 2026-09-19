@@ -14,10 +14,18 @@ import re
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from telegram import Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, MessageReactionHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    MessageReactionHandler,
+    filters,
+)
 
 from health_agent.db.models import AgentRun, Conversation, Feedback
 from health_agent.db.session import get_session
@@ -65,15 +73,20 @@ def _chunks(text: str) -> list[str]:
     return out
 
 
-async def _reply(message: Message, text: str, on_sent=None) -> list[Message]:
+async def _reply(message: Message, text: str, on_sent=None, reply_markup=None) -> list[Message]:
     """Wyślij odpowiedź w kawałkach i zwróć wszystkie wiadomości Telegrama."""
     sent_messages = []
-    for chunk in _chunks(text):
+    for index, chunk in enumerate(_chunks(text)):
+        markup = reply_markup if index == 0 else None
         try:
-            sent = await message.reply_text(_to_telegram_markdown(chunk), parse_mode=ParseMode.MARKDOWN)
+            sent = await message.reply_text(
+                _to_telegram_markdown(chunk),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=markup,
+            )
         except BadRequest:
             logger.warning("Markdown się nie sparsował, wysyłam zwykły tekst")
-            sent = await message.reply_text(chunk)
+            sent = await message.reply_text(chunk, reply_markup=markup)
         sent_messages.append(sent)
         if on_sent is not None:
             on_sent(sent_messages)
@@ -112,7 +125,8 @@ def _delete_conversation_if_unsent(conversation_id: int) -> None:
 
 
 async def _tracked_reply(
-    message: Message, text: str, agent: str, root_run_id: int | None = None
+    message: Message, text: str, agent: str, root_run_id: int | None = None,
+    reply_markup=None,
 ) -> list[Message]:
     conversation_id = _create_assistant_conversation(
         str(message.chat_id), text, agent, root_run_id
@@ -122,6 +136,7 @@ async def _tracked_reply(
             message,
             text,
             on_sent=lambda sent: _update_conversation_messages(conversation_id, sent),
+            reply_markup=reply_markup,
         )
     except Exception:
         # Gdy choć jeden kawałek dotarł, zachowujemy jego ID, aby nadal dało
@@ -286,7 +301,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.exception("Błąd podczas odpowiadania na wiadomość")
         answer = "Coś poszło nie tak przy próbie odpowiedzi - spróbuj ponownie za chwilę."
 
-    await _tracked_reply(update.message, answer, "orchestrator", root_run_id)
+    draft_match = re.search(r"\[REMINDER_DRAFT:(\d+)\]", answer)
+    reply_markup = None
+    if draft_match:
+        rule_id = int(draft_match.group(1))
+        answer = re.sub(r"\s*\[REMINDER_DRAFT:\d+\]\s*", "", answer).strip()
+        reply_markup = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton(
+                    "Aktywuj", callback_data=f"rule:{rule_id}:activate"
+                ),
+                InlineKeyboardButton(
+                    "Anuluj", callback_data=f"rule:{rule_id}:cancel"
+                ),
+            ]]
+        )
+    await _tracked_reply(
+        update.message, answer, "orchestrator", root_run_id, reply_markup=reply_markup
+    )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -440,6 +472,167 @@ async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text = "Nie udało się zsynchronizować Intervals.icu. Spróbuj ponownie za chwilę."
     await _tracked_reply(update.message, text, "sync")
 
+
+_PHOTO_VIEW_ALIASES = {
+    "przód": "front",
+    "przod": "front",
+    "front": "front",
+    "bok": "side",
+    "side": "side",
+    "tył": "back",
+    "tyl": "back",
+    "back": "back",
+    "inne": "other",
+    "other": "other",
+}
+
+
+def _photo_caption(caption: str | None) -> tuple[str, dt.date, str | None]:
+    from health_agent.time_utils import local_today
+
+    parts = (caption or "").strip().split()
+    view = _PHOTO_VIEW_ALIASES.get(parts[0].lower(), "other") if parts else "other"
+    if parts and parts[0].lower() in _PHOTO_VIEW_ALIASES:
+        parts.pop(0)
+    day = local_today()
+    if parts:
+        try:
+            day = dt.date.fromisoformat(parts[0])
+            parts.pop(0)
+        except ValueError:
+            pass
+    return view, day, " ".join(parts) or None
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message or not update.message.photo:
+        return
+    photo = update.message.photo[-1]
+    if (photo.file_size or 0) > settings.progress_photo_max_bytes:
+        await update.message.reply_text("Zdjęcie jest za duże (limit 15 MB).")
+        return
+    tg_file = await photo.get_file()
+    raw = bytes(await tg_file.download_as_bytearray())
+    view, captured_date, note = _photo_caption(update.message.caption)
+    from health_agent.tools.photos import save_progress_photo
+
+    try:
+        result = await asyncio.to_thread(
+            save_progress_photo,
+            raw,
+            captured_date=captured_date,
+            view=view,
+            note=note,
+            source="telegram",
+        )
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    status = "już było w archiwum" if result["deduplicated"] else "zapisane"
+    await update.message.reply_text(
+        f"📷 Zdjęcie {status}: {result['captured_date']}, {result['view']}."
+    )
+
+
+async def cmd_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    requested = context.args[0].lower() if context.args else None
+    view = _PHOTO_VIEW_ALIASES.get(requested) if requested else None
+    if requested and view is None:
+        await update.message.reply_text("Widok: przód, bok, tył albo inne.")
+        return
+    from health_agent.tools.photos import list_progress_photos, progress_photo_path
+
+    photos = await asyncio.to_thread(list_progress_photos, view, 6)
+    if not photos:
+        await update.message.reply_text("Brak zdjęć w tym widoku.")
+        return
+    for item in reversed(photos):
+        found = progress_photo_path(item["id"])
+        if found is None:
+            continue
+        path, _ = found
+        caption = (
+            f"{item['captured_date']} · {item['view']} · "
+            f"{item['weight_kg'] if item['weight_kg'] is not None else '—'} kg · "
+            f"{item['fat_pct'] if item['fat_pct'] is not None else '—'}% "
+            f"{item['note'] or ''}"
+        ).strip()
+        with path.open("rb") as image:
+            await update.message.reply_photo(photo=image, caption=caption)
+
+
+async def cmd_suple(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    from health_agent.tools.reminders import list_supplements
+
+    rows = await asyncio.to_thread(list_supplements)
+    lines = ["**Suplementy:**"]
+    lines.extend(
+        f"- #{row['id']} {row['name']}"
+        + (f" — {row['dose']}" if row["dose"] else "")
+        + (f" (ostatnio: {row['last_status']})" if row["last_status"] else "")
+        for row in rows
+    )
+    if not rows:
+        lines.append("- brak")
+    await _tracked_reply(update.message, "\n".join(lines), "supplements")
+
+
+async def cmd_przypomnienia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    from health_agent.tools.reminders import list_reminder_rules
+
+    rows = await asyncio.to_thread(list_reminder_rules)
+    lines = ["**Przypomnienia:**"]
+    lines.extend(
+        f"- #{row['id']} [{row['status']}] {row['local_time']} — {row['title']}"
+        for row in rows
+    )
+    if not rows:
+        lines.append("- brak")
+    await _tracked_reply(update.message, "\n".join(lines), "reminders")
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or not _is_authorized(update):
+        return
+    await query.answer()
+    data = query.data or ""
+    try:
+        namespace, raw_id, action = data.split(":", 2)
+        item_id = int(raw_id)
+        if namespace == "rule":
+            from health_agent.tools.reminders import (
+                activate_reminder_rule,
+                update_reminder_rule,
+            )
+
+            if action == "activate":
+                await asyncio.to_thread(activate_reminder_rule, item_id)
+                text = "Przypomnienie aktywowane."
+            elif action == "cancel":
+                await asyncio.to_thread(update_reminder_rule, item_id, status="paused")
+                text = "Szkic anulowany."
+            else:
+                raise ValueError("Nieznana akcja")
+        elif namespace == "reminder":
+            from health_agent.tools.reminders import complete_occurrence
+
+            text = await asyncio.to_thread(complete_occurrence, item_id, action)
+        else:
+            raise ValueError("Nieznany callback")
+    except (ValueError, LookupError):
+        logger.exception("Nieprawidłowy callback Telegrama: %s", data)
+        text = "Nie udało się zastosować tej akcji."
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(text)
+
+
 def build_bot():
     if not settings.telegram_bot_token:
         raise RuntimeError("Brak TELEGRAM_BOT_TOKEN w .env")
@@ -451,7 +644,12 @@ def build_bot():
     app.add_handler(CommandHandler("daily", cmd_daily))
     app.add_handler(CommandHandler("weekly", cmd_weekly))
     app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("foto", cmd_foto))
+    app.add_handler(CommandHandler("suple", cmd_suple))
+    app.add_handler(CommandHandler("przypomnienia", cmd_przypomnienia))
+    app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(?:rule|reminder):"))
     app.add_handler(MessageReactionHandler(handle_reaction))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     return app

@@ -298,3 +298,178 @@ class Feedback(Base):
     comment: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CorrelationResult(Base):
+    """Wersjonowany, deterministyczny wynik jednej wcześniej ustalonej pary."""
+
+    __tablename__ = "correlation_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "method_version", "pair_key", "period_end",
+            name="uq_correlation_method_pair_period",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    method_version: Mapped[str] = mapped_column(String(32))
+    pair_key: Mapped[str] = mapped_column(String(64), index=True)
+    period_start: Mapped[dt.date] = mapped_column(Date)
+    period_end: Mapped[dt.date] = mapped_column(Date, index=True)
+    sample_count: Mapped[int] = mapped_column(Integer)
+    rho: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(32))
+    details_json: Mapped[dict | None] = mapped_column(JSON)
+    knowledge_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class DashboardSession(Base):
+    __tablename__ = "dashboard_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ProgressPhoto(Base):
+    """Metadane zdjęcia sylwetki; bajty pozostają poza bazą i poza LLM."""
+
+    __tablename__ = "progress_photos"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_progress_photos_sha256"),
+        CheckConstraint(
+            "view IN ('front', 'side', 'back', 'other')",
+            name="ck_progress_photos_view",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    captured_date: Mapped[dt.date] = mapped_column(Date, index=True)
+    view: Mapped[str] = mapped_column(String(16), index=True)
+    note: Mapped[str | None] = mapped_column(String)
+    storage_key: Mapped[str] = mapped_column(String(256), unique=True)
+    content_type: Mapped[str] = mapped_column(String(64))
+    bytes_size: Mapped[int] = mapped_column(Integer)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(16), default="staging", index=True)
+    source: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Supplement(Base):
+    __tablename__ = "supplements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    dose: Mapped[str | None] = mapped_column(String(128))
+    notes: Mapped[str | None] = mapped_column(String)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class SupplementIntake(Base):
+    __tablename__ = "supplement_intakes"
+    __table_args__ = (
+        UniqueConstraint(
+            "supplement_id", "scheduled_for", name="uq_supplement_intake_schedule"
+        ),
+        CheckConstraint(
+            "status IN ('taken', 'skipped')", name="ck_supplement_intake_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplement_id: Mapped[int] = mapped_column(
+        ForeignKey("supplements.id", ondelete="CASCADE"), index=True
+    )
+    scheduled_for: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    status: Mapped[str] = mapped_column(String(16))
+    source: Mapped[str] = mapped_column(String(16))
+    note: Mapped[str | None] = mapped_column(String)
+
+
+class ReminderRule(Base):
+    __tablename__ = "reminder_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'active', 'paused')", name="ck_reminder_rules_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(256))
+    local_time: Mapped[str] = mapped_column(String(5))
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Warsaw")
+    schedule_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    condition_type: Mapped[str | None] = mapped_column(String(32))
+    condition_threshold: Mapped[float | None] = mapped_column(Float)
+    condition_window_hours: Mapped[int | None] = mapped_column(Integer)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class ReminderOccurrence(Base):
+    __tablename__ = "reminder_occurrences"
+    __table_args__ = (
+        UniqueConstraint("rule_id", "scheduled_for", name="uq_reminder_occurrence_schedule"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("reminder_rules.id", ondelete="CASCADE"), index=True
+    )
+    scheduled_for: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    evaluated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("occurrence_id", name="uq_notification_outbox_occurrence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("reminder_occurrences.id", ondelete="CASCADE"), index=True
+    )
+    payload_json: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String)
+
+
+class DataFreshness(Base):
+    """Oddziela czas otrzymania paczki od dnia, do którego zawiera pomiar."""
+
+    __tablename__ = "data_freshness"
+    __table_args__ = (
+        UniqueConstraint("metric", "source", name="uq_data_freshness_metric_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    metric: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(32))
+    observed_through: Mapped[dt.date] = mapped_column(Date)
+    received_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

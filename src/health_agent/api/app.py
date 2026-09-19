@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from health_agent.api.dashboard import router as dashboard_router
 from health_agent.db.session import get_session
 from health_agent.ingest.healthconnect import ingest_payload
 from health_agent.scheduler import build_scheduler
@@ -23,6 +24,11 @@ logger = logging.getLogger("health_agent.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from health_agent.tools.photos import reconcile_progress_photos
+
+    photo_reconcile = reconcile_progress_photos()
+    if photo_reconcile["fixed"] or photo_reconcile["deleted_staging_rows"]:
+        logger.info("Naprawiono stan archiwum zdjęć: %s", photo_reconcile)
     scheduler = None
     if settings.scheduler_enabled:
         scheduler = build_scheduler()
@@ -41,6 +47,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="health-agent", lifespan=lifespan)
+app.include_router(dashboard_router)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    )
+    return response
 
 
 @app.get("/health")
@@ -53,6 +73,8 @@ async def ingest_healthconnect(
     request: Request,
     x_webhook_secret: str | None = Header(default=None),
 ) -> dict:
+    if settings.app_env == "production" and not settings.webhook_shared_secret:
+        raise HTTPException(status_code=503, detail="WEBHOOK_SHARED_SECRET nie jest skonfigurowany")
     if settings.webhook_shared_secret and x_webhook_secret != settings.webhook_shared_secret:
         raise HTTPException(status_code=401, detail="zły albo brakujący X-Webhook-Secret")
 

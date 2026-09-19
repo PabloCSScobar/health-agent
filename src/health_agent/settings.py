@@ -40,6 +40,23 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
 
+    # --- Dashboard i archiwum zdjęć ---
+    dashboard_password_hash: str | None = None
+    dashboard_cookie_secure: bool = True
+    dashboard_session_idle_hours: int = 12
+    dashboard_session_absolute_days: int = 7
+    progress_photos_dir: str = "data/photos"
+    progress_photo_max_bytes: int = 15 * 1024 * 1024
+    progress_photo_max_pixels: int = 25_000_000
+
+    # --- Korelacje i przypomnienia ---
+    correlations_enabled: bool = False
+    correlations_day: str = "sun"
+    correlations_hour: int = 19
+    correlations_minute: int = 0
+    reminders_enabled: bool = True
+    reminder_data_fresh_hours: int = 2
+
     # --- LLM ---
     anthropic_api_key: str | None = None
     claude_model: str = "anthropic:claude-opus-5"

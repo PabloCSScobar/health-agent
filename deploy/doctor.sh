@@ -41,8 +41,12 @@ echo "Alembic: $current_revision"
 
 echo "== API =="
 docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+docker compose exec -T api python -c "from health_agent.settings import settings; assert settings.app_env != 'production' or settings.dashboard_password_hash, 'Brak DASHBOARD_PASSWORD_HASH na production'"
 
 echo "== Katalog backupów =="
 docker compose exec -T api python -c "from pathlib import Path; p=Path('/app/backups/.write-test'); p.write_text('ok'); p.unlink()"
+
+echo "== Archiwum zdjęć =="
+docker compose exec -T api python -c "from pathlib import Path; p=Path('/app/data/photos/.write-test'); p.write_text('ok'); p.unlink()"
 
 echo "Wszystkie kontrole zakończone powodzeniem."

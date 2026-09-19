@@ -7,8 +7,9 @@ development scheduler jest domyślnie wyłączony.
 
 ## Nowa instalacja
 
-Wymagane są Docker Engine z Compose v2 oraz OpenSSL. Na VPS zalecany jest
-Tailscale; port API jest publikowany wyłącznie na `127.0.0.1`.
+Wymagane są Docker Engine z Compose v2 oraz OpenSSL. Na VPS potrzebny jest
+reverse proxy HTTPS; port API pozostaje publikowany wyłącznie na
+`127.0.0.1`. Może to być Tailscale Serve albo publiczny Caddy.
 
 ```bash
 git clone <adres-repozytorium> health_agent
@@ -34,14 +35,25 @@ production tokenem osobnego bota dev, ustaw `development/false`, a dopiero
 potem uruchom Compose. Na VPS ustaw `production/true`. Instalator nie zgaduje
 trybu istniejącego `.env`, jeśli brakuje w nim `APP_ENV`.
 
+Dashboard wymaga hasła. Wygeneruj hash po instalacji zależności:
+
+```bash
+uv run health-agent hash-password
+```
+
+Wpisz wynik do `.env` jako wartość w pojedynczych cudzysłowach, np.
+`DASHBOARD_PASSWORD_HASH='$argon2id$...'`. Na publicznym VPS pozostaw
+`DASHBOARD_COOKIE_SECURE=true`.
+
 Dla Tailscale można wystawić lokalne API poleceniem wykonywanym na hoście:
 
 ```bash
 sudo tailscale serve --bg http://127.0.0.1:8000
 ```
 
-Adres HTTPS pokazany przez Tailscale ustaw jako bazę webhooka w telefonie.
-Nie wystawiaj portu 8000 publicznie.
+Adres HTTPS ustaw jako bazę webhooka w telefonie. Dashboard jest pod
+`https://adres/dash`. Nie wystawiaj portu 8000 bezpośrednio; publiczny ma
+być wyłącznie reverse proxy z TLS.
 
 ## Istniejąca baza
 
@@ -82,7 +94,8 @@ się nie powiedzie, procesy pozostają zatrzymane do ręcznej diagnozy. Kod
 należy wcześniej pobrać świadomie przez `git pull --ff-only`; skrypt nie
 aktualizuje repozytorium automatycznie.
 
-Backupy znajdują się w nazwanym wolumenie `health_agent_backups`.
+Backupy bazy i archiwa zdjęć z manifestem znajdują się w nazwanym wolumenie
+`health_agent_backups`; robocze zdjęcia są w `health_agent_photos`.
 Kopia na tym samym hoście nie chroni przed awarią dysku; osobny backup poza
 VPS pozostaje wymagany.
 

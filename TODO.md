@@ -54,10 +54,11 @@ dla reszty, jeden agent naraz:
 - [x] **StrengthCoach** - `tools/strength.py` (schemat, parser, e1RM, objętość,
   PR, grupy mięśniowe), `prompts/strength.md`. Do przetestowania dopiero po
   kilku prawdziwych wpisach.
-- [ ] **Analiza korelacji → `agent_memory`** - mechanizm pamięci istnieje,
-  prawie nieużywany. Cotygodniowy job: recovery/running szukają wzorców
-  ("HRV spada po dwóch mocnych biegach", "gorszy sen po treningu po 20:00")
-  i zapisują jako fakty. Potem odpowiedzi są o użytkowniku, nie ogólne.
+- [x] **Analiza korelacji → `knowledge`** - deterministyczny dzienny frame,
+  pięć jawnych par Spearmana, minimum 20 pełnych par i próg `|rho|>=0.4`.
+  Wyniki są wersjonowane, a aktywna lekcja ma niską pewność i jawne
+  zastrzeżenie o braku przyczynowości. CLI działa; job niedzielny jest
+  domyślnie wyłączony do ręcznego przeglądu pierwszego wyniku.
 - [ ] **Plan treningowy jako punkt odniesienia** - cel (np. półmaraton w
   dacie X) + tygodniowy plan (Intervals.icu ma API na zaplanowane treningi)
   → "jesteś 12 km za planem, ale HRV mówi, że słusznie odpuściłeś".
@@ -80,11 +81,12 @@ dla reszty, jeden agent naraz:
 
 ## Suplementy i przypomnienia (pomysł użytkownika, zweryfikowany - częściowo)
 
-- [ ] **Tabela `supplements`** (nazwa, dawka, harmonogram: godzina ALBO
-  posiłek, aktywny od/do) + log "wzięte/pominięte" (potwierdzenie z
-  Telegrama jednym słowem, snooze). NutritionCoach widzi suplementację.
-- [ ] **Przypomnienia o stałej godzinie** - proste: cron w istniejącym
-  schedulerze + `_send_telegram_message` (jak alerty). Bez ryzyka.
+- [x] **Tabela `supplements` + log** - CRUD w dashboardzie, `/suple`,
+  potwierdzenia wzięte/pominięte i narzędzie NutritionCoach.
+- [x] **Przypomnienia o stałej godzinie i warunkowe** - szkic wymaga
+  potwierdzenia; warunki v1: kroki/białko poniżej progu oraz brak
+  biegu/treningu w oknie. Reguły, wystąpienia i outbox są trwałe; nieświeże
+  dane są ponawiane do 2 h, potem oznaczane jako pominięte.
 - [ ] **Przypomnienia "do obiadu/kolacji"** - UWAGA, ograniczenie: Health
   Connect przez Fitatu NIE przekazuje typu posiłku ani godziny - każda
   pozycja ma `start_time`/`end_time` = cała doba, `meal = None` (sprawdzone
@@ -105,19 +107,20 @@ dla reszty, jeden agent naraz:
 Decyzja użytkownika (2026-09-16): zdjęcia NIE są analizowane przez model.
 Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 
-- [ ] **Odbiór zdjęć z Telegrama** → plik na dysku (`data/photos/`,
+- [x] **Odbiór zdjęć z Telegrama** → plik na dysku (`data/photos/`,
   gitignored - NIE blob w Postgresie) + wiersz w `progress_photos` (data,
   typ ujęcia przód/bok/tył, notatka, waga i % tłuszczu z `body_composition`
   z tego dnia - żeby porównanie w czasie było liczba+obraz, nie sam obraz).
   Typ ujęcia i notatka z podpisu zdjęcia na Telegramie (np. "przód").
-- [ ] **Porównanie w czasie** - widok w dashboardzie (patrz "Niezawodność"):
+- [x] **Porównanie w czasie** - widok w dashboardzie (patrz "Niezawodność"):
   zdjęcia tego samego typu obok siebie, chronologicznie, z wagą/% tłuszczu
   pod każdym. Ewentualnie na Telegramie: `/foto przód` → ostatnie N zdjęć
   tego typu jako album.
 - [ ] Zachęcać do standaryzacji (ta sama poza, rano po ważeniu, to samo
   miejsce/światło) - inaczej porównanie w czasie nic nie mówi.
-- [ ] **Backup**: `pg_dump` NIE obejmuje plików - `data/photos/` trzeba
-  dołożyć do strategii backupu (patrz "Niezawodność").
+- [x] **Backup lokalny zdjęć**: osobne archiwum tar.gz z manifestem SHA-256
+  powstaje obok dumpa bazy. Kopia poza VPS pozostaje osobnym, niższym
+  priorytetem.
 
 ## Wygoda wprowadzania danych
 
@@ -126,8 +129,9 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
   seriami).
 - [x] **Samopoczucie rano (1-5) + notatki** - wpisy `wellbeing` są ściśle
   walidowane w skali 1-5, a RecoveryAnalyst czyta historię ocen i notatek.
-- [ ] Skorelować samopoczucie ze snem/HRV; kontuzje i leki dodać do jawnego
-  kontraktu profilu/wiedzy, zamiast wyciągać je z dowolnych notatek.
+- [x] Skorelować samopoczucie ze snem/HRV.
+- [ ] Kontuzje i leki dodać do jawnego kontraktu profilu/wiedzy, zamiast
+  wyciągać je z dowolnych notatek.
 
 ## Niezawodność i dostęp
 
@@ -177,9 +181,9 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
 - [ ] **Deterministyczne nudge'e** (nie LLM, reguły w schedulerze jak
   alerty): "4 dni bez treningu", "białko poniżej celu 3 dni z rzędu", "waga
   rośnie 2 tygodnie". Zero kosztu. Wymaga celów (pierwsza sekcja).
-- [ ] **Prosty dashboard** - FastAPI już jest; jedna strona z wykresami
-  (waga, HRV, km/tydzień, deficyt, zdjęcia obok siebie). Lokalnie przez
-  Tailscale, bez wystawiania danych na zewnątrz.
+- [x] **Dashboard** - `/dash` za publicznym HTTPS i logowaniem Argon2id;
+  zakresy 7/30/90 dni, korelacje, zdjęcia, suplementy i przypomnienia.
+  Sesje są w PostgreSQL, mutacje mają CSRF i kontrolę Origin.
 - [ ] Alert o wygasłym tokenie Fitatu - niski priorytet, dopóki Fitatu jest
   tylko ścieżką zapasową.
 

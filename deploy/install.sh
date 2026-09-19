@@ -83,6 +83,9 @@ if [[ -z "$(env_value WEBHOOK_SHARED_SECRET)" ]]; then
 fi
 
 required=(POSTGRES_PASSWORD DATABASE_URL ANTHROPIC_API_KEY INTERVALS_API_KEY INTERVALS_ATHLETE_ID TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID WEBHOOK_SHARED_SECRET)
+if [[ "$install_mode" == production ]]; then
+    required+=(DASHBOARD_PASSWORD_HASH)
+fi
 missing=()
 for key in "${required[@]}"; do
     value=$(env_value "$key")

@@ -74,6 +74,27 @@ def cmd_ingest_intervals(args: argparse.Namespace) -> None:
     print(json.dumps(result.__dict__, indent=2, ensure_ascii=False, default=str))
 
 
+def cmd_correlations(args: argparse.Namespace) -> None:
+    from health_agent.tools.correlations import get_correlations, publish_correlations
+
+    results = publish_correlations() if args.publish else get_correlations(args.days)
+    print(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+
+
+def cmd_hash_password(args: argparse.Namespace) -> None:
+    import getpass
+
+    from argon2 import PasswordHasher
+
+    password = getpass.getpass("Hasło dashboardu: ")
+    confirmation = getpass.getpass("Powtórz hasło: ")
+    if password != confirmation:
+        raise SystemExit("Hasła się różnią")
+    if len(password) < 12:
+        raise SystemExit("Hasło musi mieć co najmniej 12 znaków")
+    print(PasswordHasher().hash(password))
+
+
 
 def cmd_summary(args: argparse.Namespace) -> None:
     import asyncio
@@ -213,6 +234,21 @@ def main() -> None:
     feedback.add_argument("--bad", action="store_true", help="tylko oceny 👎")
     feedback.add_argument("--export", required=False, help="zapisz raport Markdown do pliku")
     feedback.set_defaults(func=cmd_feedback)
+
+    correlations = sub.add_parser(
+        "correlations", help="Policz ustalone korelacje zdrowotne"
+    )
+    correlations.add_argument("--days", type=int, default=84)
+    correlations.add_argument(
+        "--publish", action="store_true",
+        help="zapisz wersjonowane wyniki i kwalifikujące obserwacje w knowledge",
+    )
+    correlations.set_defaults(func=cmd_correlations)
+
+    password = sub.add_parser(
+        "hash-password", help="Wygeneruj Argon2id hash hasła dashboardu"
+    )
+    password.set_defaults(func=cmd_hash_password)
 
     args = parser.parse_args()
     args.func(args)

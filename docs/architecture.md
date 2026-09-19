@@ -30,10 +30,15 @@ zaznaczono inaczej.
 - `db/models.py`: tabele i ograniczenia; `db/session.py`: sesja z commit/rollback.
   Zmiany schematu mają migracje w katalogu repo `alembic/versions/`.
 - `api/app.py`: FastAPI, autoryzacja webhooka, start/stop schedulera.
+- `api/dashboard.py`: sesje Argon2id/CSRF, dashboard i prywatne API danych,
+  zdjęć, suplementów oraz przypomnień.
 - `scheduler.py`: polling, alerty na Telegram i backup; transakcyjny catch-up
   Intervals.icu oraz blokada między procesami są w `ingest/sync.py`.
 - `ingest/`: normalizacja źródeł i dedup, bez generowania odpowiedzi LLM.
 - `tools/`: narzędzia domenowe oraz zapis wpisów ręcznych, profilu i wiedzy.
+- `tools/correlations.py`: dzienny frame i jawne pary Spearmana;
+  `tools/photos.py`: lokalny magazyn zdjęć bez dostępu LLM;
+  `tools/reminders.py`: suplementy, reguły, świeżość danych i outbox.
 - `agents/base.py`: fabryka modeli, prompt caching, async run, rejestracja
   kosztu/czasu/narzędzi i drzewa wywołań w `agent_runs` przez `ContextVar`.
 - `agents/registry.py`: routing, narzędzia, onboarding, wspólny kontrakt
@@ -81,6 +86,14 @@ konfiguruje YAML; nie kopiuj zmiennych nazw modeli do instrukcji.
   `feedback`: jedna aktualna ocena 👍/👎 z opcjonalnym komentarzem na odpowiedź.
   `agent_runs`: model, tokeny, koszt, czas, nazwy narzędzi i rodzic wywołania;
   raport wieloagentowy ma syntetyczny korzeń `parallel-specialists`.
+- `correlation_results`: wersjonowane wyniki pięciu jawnych par;
+  kwalifikujące obserwacje mają aktywny wpis `knowledge` rodzaju `lekcja`
+  z niską pewnością.
+- `progress_photos`: tylko metadane i stan pliku; bajty są na współdzielonym
+  wolumenie. `supplements` i `supplement_intakes` przechowują listę oraz log.
+- `reminder_rules`, `reminder_occurrences` i `notification_outbox`
+  zapewniają trwałość i deduplikację; `data_freshness` odróżnia czas odbioru
+  od dnia obserwacji. Nieznany lub stary pomiar nigdy nie staje się zerem.
 
 Ta pamięć aplikacji opisuje użytkownika i jego dane zdrowotne. Kontekst
 agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
@@ -108,7 +121,8 @@ agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
 - `undo-import` nie przywraca profilu. Część przywracania nieaktywnych
   faktów opiera się na czasie aktualizacji, nie wyłącznie relacji do
   dokumentu — nie traktuj tego jako transakcyjnego rollbacku wszystkiego.
-- Backup uruchamia `pg_dump` względem `DATABASE_URL`; obraz aplikacji zawiera
+- Backup uruchamia `pg_dump` względem `DATABASE_URL`, a zdjęcia pakuje
+  osobno z manifestem; obraz aplikacji zawiera
   kompatybilnego klienta PostgreSQL. Nie montuj socketa Dockera w kontenerze
   aplikacji.
 
@@ -119,8 +133,8 @@ import wiedzy, polling, alerty, backupy oraz przenośne wdrożenie Compose.
 `migrate` stosuje Alembic przed startem jednego workera API; scheduler jest
 w nim warunkowy, a bot jest osobną usługą. Docker i warstwa HTTPS pozostają
 usługami hosta.
-Feedback reakcji Telegram, opcjonalne podsumowania dzienne i tygodniowe,
-`/sync` Intervals.icu, atomowe wpisy zbiorcze oraz historia samopoczucia są
-gotowe. Brak jeszcze produkcyjnego ingestora Fitatu API, zadań korelacyjnych,
-dashboardu, obsługi zdjęć i głosu.
+Feedback reakcji Telegram, opcjonalne podsumowania, `/sync` Intervals.icu,
+atomowe wpisy zbiorcze, historia samopoczucia, korelacje, dashboard,
+lokalne zdjęcia, suplementy i trwałe przypomnienia są gotowe w kodzie.
+Brak jeszcze produkcyjnego ingestora Fitatu API i obsługi głosu.
 Przed rozpoczęciem tych zadań sprawdź `TODO.md` i `PLAN.md`.

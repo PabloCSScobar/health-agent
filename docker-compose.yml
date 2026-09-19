@@ -10,6 +10,7 @@ x-app: &app
     SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
   volumes:
     - health_agent_backups:/app/backups
+    - health_agent_photos:/app/data/photos
   init: true
 
 services:
@@ -67,3 +68,4 @@ services:
 volumes:
   health_agent_pgdata:
   health_agent_backups:
+  health_agent_photos:

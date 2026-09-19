@@ -11,9 +11,13 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import gzip
+import hashlib
+import io
+import json
 import logging
 import os
 import subprocess
+import tarfile
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -131,6 +135,38 @@ def send_daily_summary() -> None:
 def send_weekly_summary() -> None:
     _send_summary("weekly")
 
+
+def run_correlations() -> None:
+    try:
+        from health_agent.tools.correlations import publish_correlations
+
+        results = publish_correlations()
+        logger.info(
+            "Korelacje policzone: %d par, %d kwalifikujących",
+            len(results),
+            sum(item["status"] == "qualifying" for item in results),
+        )
+    except Exception:
+        logger.exception("Analiza korelacji nieudana")
+
+
+def process_reminders() -> None:
+    try:
+        from health_agent.tools.reminders import (
+            dispatch_pending_notifications,
+            evaluate_due_occurrences,
+            materialize_due_occurrences,
+        )
+
+        materialize_due_occurrences()
+        evaluated = evaluate_due_occurrences()
+        delivered = dispatch_pending_notifications()
+        if evaluated["queued"] or evaluated["retrying"] or evaluated["skipped"] or delivered["sent"]:
+            logger.info("Cykl przypomnień: evaluated=%s delivery=%s", evaluated, delivered)
+    except Exception:
+        logger.exception("Cykl przypomnień nieudany")
+
+
 def check_stale_sources() -> None:
     """Alert na Telegram, jeśli któreś źródło nie zsynchronizowało się od
     `settings.alerts_stale_hours` godzin (patrz plan, sekcja 9: apka Health
@@ -199,6 +235,7 @@ def backup_database() -> Path | None:
 
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_file = backup_dir / f"health_agent_{timestamp}.sql.gz"
+    photo_archive = backup_dir / f"health_agent_{timestamp}.photos.tar.gz"
 
     try:
         database_url = make_url(settings.database_url)
@@ -225,27 +262,63 @@ def backup_database() -> Path | None:
         if sslmode := database_url.query.get("sslmode"):
             process_env["PGSSLMODE"] = sslmode
 
-        result = subprocess.run(
-            command,
-            env=process_env,
-            capture_output=True,
-            check=True,
-        )
-        with gzip.open(out_file, "wb") as f:
-            f.write(result.stdout)
+        from health_agent.tools.photos import photo_archive_lock, photo_root
+
+        with photo_archive_lock():
+            # Jedna blokada obejmuje zrzut bazy i pliki, więc upload/usunięcie
+            # zdjęcia nie może rozdzielić odpowiadających sobie artefaktów.
+            result = subprocess.run(
+                command,
+                env=process_env,
+                capture_output=True,
+                check=True,
+            )
+            with gzip.open(out_file, "wb") as f:
+                f.write(result.stdout)
+            root = photo_root()
+            files = [
+                path for path in root.iterdir()
+                if path.is_file() and not path.name.startswith(".")
+            ]
+            manifest = {
+                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "database_backup": out_file.name,
+                "photos": [],
+            }
+            with tarfile.open(photo_archive, "w:gz") as archive:
+                for path in sorted(files):
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    manifest["photos"].append(
+                        {"file": path.name, "bytes": path.stat().st_size, "sha256": digest}
+                    )
+                    archive.add(path, arcname=f"photos/{path.name}", recursive=False)
+                manifest_bytes = json.dumps(
+                    manifest, ensure_ascii=False, indent=2
+                ).encode("utf-8")
+                info = tarfile.TarInfo("manifest.json")
+                info.size = len(manifest_bytes)
+                info.mtime = int(dt.datetime.now(dt.timezone.utc).timestamp())
+                archive.addfile(info, io.BytesIO(manifest_bytes))
         logger.info("Backup bazy zapisany: %s (%d bajtów)", out_file, out_file.stat().st_size)
+        logger.info(
+            "Backup zdjęć zapisany: %s (%d plików)",
+            photo_archive,
+            len(manifest["photos"]),
+        )
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode("utf-8", errors="replace").strip()
         logger.error("Backup bazy nieudany (pg_dump): %s", stderr or f"kod {exc.returncode}")
         out_file.unlink(missing_ok=True)
+        photo_archive.unlink(missing_ok=True)
         return None
     except Exception:
         logger.exception("Backup bazy nieudany")
         out_file.unlink(missing_ok=True)
+        photo_archive.unlink(missing_ok=True)
         return None
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=settings.backup_retention_days)
-    for old_file in backup_dir.glob("health_agent_*.sql.gz"):
+    for old_file in backup_dir.glob("health_agent_*"):
         if dt.datetime.fromtimestamp(old_file.stat().st_mtime, tz=dt.timezone.utc) < cutoff:
             old_file.unlink(missing_ok=True)
             logger.info("Usunięto stary backup: %s", old_file)
@@ -301,5 +374,28 @@ def build_scheduler() -> BackgroundScheduler:
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,
+        )
+    if settings.correlations_enabled:
+        scheduler.add_job(
+            run_correlations,
+            "cron",
+            day_of_week=settings.correlations_day,
+            hour=settings.correlations_hour,
+            minute=settings.correlations_minute,
+            timezone=settings.summary_timezone,
+            id="correlations",
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+    if settings.reminders_enabled:
+        scheduler.add_job(
+            process_reminders,
+            "interval",
+            minutes=1,
+            id="process_reminders",
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
         )
     return scheduler

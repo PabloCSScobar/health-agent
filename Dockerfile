@@ -24,7 +24,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 RUN useradd --create-home --uid 10001 app
 COPY --chown=app:app . .
 RUN uv sync --frozen --no-dev \
-    && mkdir -p /app/backups \
+    && mkdir -p /app/backups /app/data/photos \
     && chown -R app:app /app
 
 USER app

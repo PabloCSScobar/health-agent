@@ -259,6 +259,30 @@ def ingest_payload(session: Session, payload: dict) -> dict:
     _collect_daily("active_calories", "calories_active", "calories")
     _collect_daily("total_calories", "calories_total", "calories")
 
+    from health_agent.tools.reminders import mark_data_freshness
+
+    now = dt.datetime.now(dt.timezone.utc)
+    if affected_days:
+        mark_data_freshness(session, "nutrition", SOURCE_NUTRITION, max(affected_days), now)
+    if payload.get("steps") and daily_activity_days:
+        step_days = {
+            _parse_time(rec.get("end_time") or rec.get("start_time")).date()
+            for rec in payload["steps"]
+            if rec.get("end_time") or rec.get("start_time")
+        }
+        if step_days:
+            mark_data_freshness(session, "steps", SOURCE_DAILY_ACTIVITY, max(step_days), now)
+    if by_time:
+        from health_agent.time_utils import local_date
+
+        mark_data_freshness(
+            session,
+            "body",
+            SOURCE_BODY_COMPOSITION,
+            max(local_date(value) for value in by_time),
+            now,
+        )
+
     return {
         "body_composition_rows": body_composition_count,
         "nutrition_item_rows": nutrition_count,

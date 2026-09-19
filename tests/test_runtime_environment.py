@@ -20,6 +20,10 @@ class RuntimeEnvironmentTest(unittest.IsolatedAsyncioTestCase):
             patch.object(app_module.settings, "app_env", "development"),
             patch.object(app_module.settings, "scheduler_enabled", False),
             patch.object(app_module, "build_scheduler") as build_scheduler,
+            patch(
+                "health_agent.tools.photos.reconcile_progress_photos",
+                return_value={"fixed": 0, "deleted_staging_rows": 0},
+            ),
         ):
             async with app_module.lifespan(app_module.app):
                 pass
@@ -32,6 +36,10 @@ class RuntimeEnvironmentTest(unittest.IsolatedAsyncioTestCase):
             patch.object(app_module.settings, "app_env", "production"),
             patch.object(app_module.settings, "scheduler_enabled", True),
             patch.object(app_module, "build_scheduler", return_value=scheduler),
+            patch(
+                "health_agent.tools.photos.reconcile_progress_photos",
+                return_value={"fixed": 0, "deleted_staging_rows": 0},
+            ),
         ):
             async with app_module.lifespan(app_module.app):
                 scheduler.start.assert_called_once_with()

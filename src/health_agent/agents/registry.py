@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from health_agent.agents.base import build_agent, run_agent, run_agent_sync, run_agent_with_id
 from health_agent.tools.body import get_body_composition_latest, get_body_composition_trend, get_body_trend
+from health_agent.tools.correlations import get_correlations
 from health_agent.tools.energy import estimate_daily_expenditure
 from health_agent.tools.manual_batch import log_manual_entries
 from health_agent.tools.knowledge import add_knowledge, get_knowledge, knowledge_digest, list_documents, read_document, set_knowledge_active
@@ -32,6 +33,12 @@ from health_agent.tools.profile import (
     onboarding_message,
     profile_prompt_block,
     set_user_profile_facts,
+)
+from health_agent.tools.reminders import (
+    add_supplement,
+    list_reminder_rules,
+    list_supplements,
+    propose_reminder_rule,
 )
 from health_agent.tools.recovery import (
     get_recovery_baseline,
@@ -124,6 +131,7 @@ SPECIALISTS: dict[str, tuple[str, list]] = {
             get_latest_workout,
             get_workouts_on_date,
             get_workouts,
+            get_correlations,
         ],
     ),
     "strength": (
@@ -132,7 +140,7 @@ SPECIALISTS: dict[str, tuple[str, list]] = {
     ),
     "nutrition": (
         _load_prompt("nutrition") + _PROMPT_SUFFIX,
-        [get_nutrition_summary, get_energy_balance, find_foods, get_nutrition_day, get_nutrition_range],
+        [get_nutrition_summary, get_energy_balance, find_foods, get_nutrition_day, get_nutrition_range, get_correlations, list_supplements],
     ),
     "body": (
         _load_prompt("body") + _PROMPT_SUFFIX,
@@ -140,7 +148,7 @@ SPECIALISTS: dict[str, tuple[str, list]] = {
     ),
     "recovery": (
         _load_prompt("recovery") + _PROMPT_SUFFIX,
-        [get_recovery_baseline, get_recovery_day, get_recovery_range, get_wellbeing_history, estimate_daily_expenditure],
+        [get_recovery_baseline, get_recovery_day, get_recovery_range, get_wellbeing_history, estimate_daily_expenditure, get_correlations],
     ),
 }
 
@@ -189,6 +197,12 @@ ORCHESTRATOR_PROMPT = (
     "'Jakie mam notatki' -> list_documents. Pytania o TREŚĆ notatek (co "
     "mówił poprzedni trener, jaką miałem kontuzję) -> delegate do "
     "właściwego specjalisty, on ma get_knowledge/read_document.\n\n"
+    "ZASADA 6 (suplementy i przypomnienia): suplement podany jako stała lista "
+    "możesz zapisać przez add_supplement. Prośba o przypomnienie MUSI użyć "
+    "propose_reminder_rule i utworzyć tylko szkic; użytkownik aktywuje go "
+    "przyciskiem. 'Wieczorem' oznacza 20:00 Europe/Warsaw. Dla warunków "
+    "steps_below/protein_below wymagaj jawnego progu; nie wymyślaj celu. "
+    "Dostępne są też no_run i no_workout z oknem godzin.\n\n"
     "Przykład pytania:\n"
     "user: Ile miałem wczoraj kroków?\n"
     "-> wywołaj delegate(agent_name='recovery', question='ile kroków wczoraj?')\n"
@@ -359,7 +373,17 @@ def build_orchestrator():
     # dodatkową, tanią rundę Haiku na potwierdzenie - profil zmienia się rzadko.
     agent = build_agent(
         "orchestrator", _orchestrator_prompt(),
-        [get_user_profile, set_user_profile_facts, forget_knowledge, restore_knowledge, list_documents],
+        [
+            get_user_profile,
+            set_user_profile_facts,
+            forget_knowledge,
+            restore_knowledge,
+            list_documents,
+            add_supplement,
+            list_supplements,
+            list_reminder_rules,
+            propose_reminder_rule,
+        ],
         output_type=[str, _delegate, log_manual_entries],
     )
     return agent
