@@ -722,6 +722,32 @@ def list_unknown_notifications() -> list[dict]:
         ]
 
 
+def list_reminder_occurrences(limit: int = 30) -> list[dict]:
+    """Ostatnie wystąpienia reguł użytkownika (bez systemowych alertów) z ich stanem."""
+    with get_session() as session:
+        rows = session.execute(
+            select(ReminderOccurrence, ReminderRule)
+            .join(ReminderRule, ReminderRule.id == ReminderOccurrence.rule_id)
+            .where(ReminderRule.system_key.is_(None))
+            .order_by(ReminderOccurrence.scheduled_for.desc(), ReminderOccurrence.id.desc())
+            .limit(min(max(limit, 1), 200))
+        ).all()
+        return [
+            {
+                "id": occurrence.id,
+                "rule_id": rule.id,
+                "title": rule.title,
+                "kind": rule.kind,
+                "scheduled_for": occurrence.scheduled_for.isoformat(),
+                "status": occurrence.status,
+                "attempts": occurrence.attempts,
+                "delivered_at": occurrence.delivered_at.isoformat() if occurrence.delivered_at else None,
+                "completed_at": occurrence.completed_at.isoformat() if occurrence.completed_at else None,
+            }
+            for occurrence, rule in rows
+        ]
+
+
 def complete_occurrence(occurrence_id: int, action: str) -> str:
     if action not in {"done", "skip", "snooze", "taken"}:
         raise ValueError("Nieznana akcja przypomnienia")

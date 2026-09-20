@@ -125,6 +125,15 @@ uv run uvicorn health_agent.api.app:app --host 0.0.0.0 --port 8000 \
 API udostępnia `GET /health`, `POST /webhook/healthconnect` oraz
 uwierzytelniony dashboard `GET /dash`. Dashboard ma sesje w PostgreSQL,
 ochronę CSRF/Origin, limit prób logowania i prywatne endpointy zdjęć.
+Frontend to pliki statyczne z pakietu (`src/health_agent/api/static/`)
+serwowane wyłącznie pod `/dash/static/`, bez zewnętrznych fontów, CDN
+i skryptów inline (CSP `script-src 'self'`). Sekcje: Przegląd (kafelki,
+wykresy SVG 7/30/90 dni, ostatnie treningi, świeżość źródeł), Korelacje,
+Zdjęcia (filtr ujęcia i porównanie dwóch zdjęć), Suplementy, Przypomnienia
+(szkice, edycja, historia wysyłek) oraz Proaktywne alerty. Adres `#sekcja`
+w URL zapamiętuje otwartą zakładkę. Interfejs wspiera tryb ciemny systemu
+i `prefers-reduced-motion`; usuwanie zdjęcia i ponowna wysyłka wymagają
+potwierdzenia.
 Sekcja „Proaktywne alerty” pokazuje ocenę trzech deterministycznych reguł,
 historię wysyłek i przełączniki tematów. Wszystkie są domyślnie wyłączone;
 wiadomość zbiorcza jest oceniana o 20:00 Europe/Warsaw przez istniejący outbox.

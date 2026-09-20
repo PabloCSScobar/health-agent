@@ -16,10 +16,16 @@ zagnieżdżony checkbox oznacza pozostały odbiór użytkownika.
 - [x] **Dashboard i dostęp** — logowanie Argon2id, sesje, CSRF/Origin,
   wykresy oraz zarządzanie zdjęciami, suplementami i przypomnieniami;
   `/dashboard` podaje konfigurowalny adres i tryb dostępu, a aplikacja obsługuje
-  opcjonalną allowlistę IP za jawnie zaufanym proxy.
+  opcjonalną allowlistę IP za jawnie zaufanym proxy. Przeprojektowany frontend
+  (2026-09-20): pliki statyczne w
+  `api/static/`, mobile-first nawigacja, kafelki z porównaniem okresów, wykresy
+  SVG z tooltipem i tabelą, porównanie zdjęć, edycja suplementów/reguł,
+  historia wysyłek, potwierdzenia akcji destrukcyjnych, tryb ciemny.
   - [ ] **Weryfikacja użytkownika:** po wdrożeniu ustawić hash hasła, zalogować
     się przez skonfigurowany HTTPS (Tailscale albo publiczny, zależnie od trybu)
-    i ocenić dashboard na telefonie.
+    i ocenić dashboard na telefonie (nawigacja dolna, wykresy, tryb ciemny).
+  - [ ] **Weryfikacja użytkownika:** po wdrożeniu przejść każdą sekcję na
+    telefonie, w tym upload zdjęcia, edycję reguły i przełącznik alertu.
 - [x] **Zdjęcia sylwetki** — Telegram, dashboard, deduplikacja, usuwanie,
   lokalny backup z manifestem SHA-256; zdjęcia nie trafiają do LLM.
   - [ ] **Weryfikacja użytkownika:** wysłać prawdziwe zdjęcie z podpisem,

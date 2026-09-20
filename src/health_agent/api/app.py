@@ -53,12 +53,17 @@ app.include_router(dashboard_router)
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
+    if request.url.path.startswith("/dash/api/"):
+        response.headers["Cache-Control"] = "private, no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    # Dashboard nie ma już skryptów inline; CSS inline zostaje dla atrybutów
+    # style ustawianych przez wykresy i porównanie zdjęć.
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; img-src 'self' data:; "
-        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+        "default-src 'self'; img-src 'self' data: blob:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
     return response
 

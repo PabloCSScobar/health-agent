@@ -31,7 +31,17 @@ zaznaczono inaczej.
   Zmiany schematu mają migracje w katalogu repo `alembic/versions/`.
 - `api/app.py`: FastAPI, autoryzacja webhooka, start/stop schedulera.
 - `api/dashboard.py`: sesje Argon2id/CSRF, dashboard i prywatne API danych,
-  zdjęć, suplementów oraz przypomnień.
+  zdjęć, suplementów oraz przypomnień. Frontend leży w `api/static/`
+  (`dashboard.html/.css/.js`, `login.html/.js`); strony HTML są wczytywane
+  przy imporcie z wersją zasobów w query (`?v=<hash>`), a `/dash/static/{nazwa}`
+  serwuje tylko pliki z allowlisty `STATIC_ASSETS`. Interfejs buduje DOM
+  z danych API wyłącznie przez bezpieczne węzły i `textContent`, wykresy to
+  inline SVG bez bibliotek.
+- `tools/overview.py`: agregaty zakładki Przegląd (ostatnia wartość, średnia,
+  porównanie z poprzednim oknem, treningi, świeżość źródeł) liczone z
+  `daily_frame`; brak pomiaru pozostaje `None`. Zmiana średniej jest pokazywana
+  tylko wtedy, gdy oba okresy mają co najmniej dwa dni z danymi, a liczebność
+  próbek nie różni się więcej niż dwukrotnie.
 - `scheduler.py`: polling, alerty na Telegram i backup; transakcyjny catch-up
   Intervals.icu oraz blokada między procesami są w `ingest/sync.py`.
 - `ingest/`: normalizacja źródeł i dedup, bez generowania odpowiedzi LLM.
@@ -119,6 +129,10 @@ agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
   granic dnia sprawdzaj UTC/Europe/Warsaw.
 - Development i production mają osobne bazy oraz boty/tokeny Telegrama.
   Wspólny token przy dwóch procesach long polling powoduje konflikt.
+- CSP w `api/app.py` ma `script-src 'self'`: nowy kod frontendu nie może
+  używać skryptów ani handlerów inline (`onclick=`), tylko plików z
+  `api/static/`. Atrybuty `style` pozostają dozwolone (`unsafe-inline` dla
+  CSS) dla pozycji tooltipów i szerokości wskaźników.
 - Tryb dashboardu (`local`, `tailscale`, `public`, `disabled`) opisuje
   oczekiwany ingress, steruje odpowiedzią Telegrama i pozwala zablokować
   router, ale sam nie otwiera portów. Tailscale Serve lub Caddy pozostają

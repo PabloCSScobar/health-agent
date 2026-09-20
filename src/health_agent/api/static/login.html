@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f2f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1411" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer">
+<title>health-agent — logowanie</title>
+<link rel="stylesheet" href="/dash/static/dashboard.css?v=__ASSET_VERSION__">
+</head>
+<body class="login-page">
+<main class="login-card">
+  <div class="brand brand-large">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span>health-agent</span>
+  </div>
+  <h1>Zaloguj się</h1>
+  <p class="section-sub">Prywatny dashboard. Sesja wygasa po 12 godzinach bezczynności.</p>
+  <form id="loginForm" novalidate>
+    <label class="field">
+      <span>Hasło</span>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+    </label>
+    <p id="loginError" class="form-error" role="alert" hidden></p>
+    <button class="btn btn-primary btn-block" id="loginButton" type="submit">Zaloguj</button>
+  </form>
+</main>
+<script src="/dash/static/login.js?v=__ASSET_VERSION__" defer></script>
+</body>
+</html>

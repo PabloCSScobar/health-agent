@@ -306,9 +306,31 @@ class FeatureStackPostgresTest(unittest.TestCase):
                 client.post("/dash/login", json={"password": password}).status_code,
                 200,
             )
+            page = client.get("/dash")
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("/dash/static/dashboard.js?v=", page.text)
+            self.assertEqual(page.headers["cache-control"], "private, no-store")
+            self.assertEqual(client.get("/dash/static/dashboard.js").status_code, 200)
+            self.assertEqual(client.get("/dash/static/nope.js").status_code, 404)
             overview = client.get("/dash/api/overview?days=7")
             self.assertEqual(overview.status_code, 200)
-            csrf = overview.json()["csrf"]
+            self.assertEqual(overview.headers["cache-control"], "private, no-store")
+            body = overview.json()
+            csrf = body["csrf"]
+            self.assertEqual(body["range"]["days"], 7)
+            self.assertEqual(len(body["series"]), 7)
+            self.assertEqual({item["key"] for item in body["metrics"]} >= {"weight_kg", "steps"}, True)
+            self.assertEqual(
+                set(body["latest"]),
+                {"Sen", "HRV", "Kroki", "Kilometry biegu", "Waga", "Białko"},
+            )
+            session_info = client.get("/dash/api/session")
+            self.assertEqual(session_info.status_code, 200)
+            self.assertEqual(session_info.headers["cache-control"], "private, no-store")
+            self.assertEqual(session_info.json()["csrf"], csrf)
+            self.assertEqual(client.get("/dash/api/reminders/history").json(), [])
+            self.assertEqual(client.get("/dash/api/photos?view=front").json(), [])
+            self.assertEqual(client.get("/dash/api/photos?view=nope").status_code, 422)
             payload = {"name": "Test", "dose": "1"}
             self.assertEqual(client.get("/dash/api/proactive-alerts").status_code, 200)
             self.assertEqual(

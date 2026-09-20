@@ -66,7 +66,9 @@ sudo tailscale serve --bg --https=443 --set-path=/dash http://127.0.0.1:8000/das
 ```
 
 Ta reguła udostępnia w tailnecie wyłącznie dashboard pod
-`https://adres/dash`. Nie obsługuje webhooka Health Connect; dla niego zachowaj
+`https://adres/dash`, w tym jego pliki CSS/JS pod `/dash/static/` (nie ma
+osobnego katalogu do wystawienia; zasoby serwuje ten sam proces API i nie
+korzystają z żadnego CDN). Nie obsługuje webhooka Health Connect; dla niego zachowaj
 osobną, publiczną regułę Caddy albo dodaj osobny prywatny mount, jeśli telefon
 zawsze należy do tailnetu. Nie wystawiaj portu 8000 bezpośrednio.
 

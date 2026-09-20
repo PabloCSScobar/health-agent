@@ -8,6 +8,7 @@ import secrets
 from collections import defaultdict, deque
 from collections.abc import Callable
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -21,7 +22,9 @@ from sqlalchemy import select
 from health_agent.db.models import DashboardSession
 from health_agent.db.session import get_session
 from health_agent.settings import settings
-from health_agent.tools.correlations import get_correlations, daily_frame
+from health_agent.time_utils import app_timezone, local_today
+from health_agent.tools.correlations import get_correlations
+from health_agent.tools.overview import overview_payload
 from health_agent.tools.photos import (
     delete_progress_photo,
     list_progress_photos,
@@ -32,6 +35,7 @@ from health_agent.tools.proactive_alerts import list_alert_settings, update_aler
 from health_agent.tools.reminders import (
     activate_reminder_rule,
     add_supplement,
+    list_reminder_occurrences,
     list_reminder_rules,
     list_supplements,
     list_unknown_notifications,
@@ -45,6 +49,35 @@ from health_agent.tools.reminders import (
 COOKIE_NAME = "health_agent_session"
 _PASSWORD_HASHER = PasswordHasher()
 _login_attempts: dict[str, deque[dt.datetime]] = defaultdict(deque)
+
+# Frontend jest zestawem plików statycznych w pakiecie; serwuje je wyłącznie
+# router /dash (tryb dostępu i allowlista IP obowiązują także dla CSS/JS).
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_ASSETS = {
+    "dashboard.css": "text/css; charset=utf-8",
+    "dashboard.js": "text/javascript; charset=utf-8",
+    "login.js": "text/javascript; charset=utf-8",
+}
+
+
+def _asset_version() -> str:
+    digest = hashlib.sha256()
+    for name in sorted(STATIC_ASSETS):
+        digest.update((STATIC_DIR / name).read_bytes())
+    return digest.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
+
+
+def _render_page(name: str) -> str:
+    return (STATIC_DIR / name).read_text(encoding="utf-8").replace(
+        "__ASSET_VERSION__", ASSET_VERSION
+    )
+
+
+LOGIN_HTML = _render_page("login.html")
+DASHBOARD_HTML = _render_page("dashboard.html")
 
 
 class LoginBody(BaseModel):
@@ -218,81 +251,7 @@ def _check_login_rate(request: Request) -> None:
     attempts.append(now)
 
 
-LOGIN_HTML = """<!doctype html>
-<html lang="pl"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>health-agent — logowanie</title>
-<style>body{font-family:system-ui;max-width:28rem;margin:12vh auto;padding:1rem;background:#f4f6f8}
-form{background:white;padding:2rem;border-radius:1rem;box-shadow:0 8px 30px #0001}input,button{box-sizing:border-box;width:100%;padding:.8rem;margin:.4rem 0}button{background:#14532d;color:white;border:0;border-radius:.5rem}</style>
-<form id="login"><h1>health-agent</h1><p>Prywatny dashboard</p>
-<input id="password" type="password" autocomplete="current-password" placeholder="Hasło" required>
-<button>Zaloguj</button><p id="error"></p></form>
-<script>document.getElementById("login").onsubmit=async function(e){e.preventDefault();
-var r=await fetch("/dash/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:document.getElementById("password").value})});
-if(r.ok){location="/dash"}else{document.getElementById("error").textContent=(await r.json()).detail}}</script></html>"""
-
-
-DASHBOARD_HTML = """<!doctype html>
-<html lang="pl"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>health-agent</title>
-<style>
-:root{font-family:system-ui;color:#17221b;background:#eef3ef}body{max-width:1100px;margin:auto;padding:1rem}
-nav{display:flex;gap:.5rem;flex-wrap:wrap}.card{background:white;border-radius:.8rem;padding:1rem;margin:1rem 0;box-shadow:0 5px 20px #0001}
-button,input,select{padding:.55rem;margin:.2rem;border:1px solid #bdc9c0;border-radius:.4rem}button{cursor:pointer}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}.hidden{display:none}
-.chart{height:160px;display:flex;align-items:end;gap:2px;border-bottom:1px solid #aaa}.bar{background:#2f855a;min-width:4px;flex:1}
-.photos{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem}.photos img{width:100%;border-radius:.5rem}
-small{color:#526058}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.5rem;border-bottom:1px solid #ddd}
-</style>
-<header><h1>health-agent</h1><nav>
-<button onclick="showTab('overview')">Przegląd</button><button onclick="showTab('correlations')">Korelacje</button>
-<button onclick="showTab('photos')">Zdjęcia</button><button onclick="showTab('supplements')">Suplementy</button>
-<button onclick="showTab('reminders')">Przypomnienia</button><button onclick="showTab('alerts')">Proaktywne alerty</button><button onclick="logout()">Wyloguj</button></nav></header>
-<main>
-<section id="overview" class="tab"><div class="card"><label>Zakres <select id="days" onchange="loadOverview()"><option>7</option><option selected>30</option><option>90</option></select> dni</label>
-<div id="summary" class="grid"></div></div><div id="charts"></div></section>
-<section id="correlations" class="tab hidden"><div class="card"><h2>Korelacje</h2><p><small>Obserwacje eksploracyjne, nie dowód przyczynowości.</small></p><div id="corr"></div></div></section>
-<section id="photos" class="tab hidden"><div class="card"><h2>Archiwum zdjęć</h2>
-<input id="photoFile" type="file" accept="image/jpeg,image/png,image/webp"><input id="photoDate" type="date">
-<select id="photoView"><option value="front">przód</option><option value="side">bok</option><option value="back">tył</option><option value="other">inne</option></select>
-<input id="photoNote" placeholder="Notatka"><button onclick="uploadPhoto()">Dodaj</button></div><div id="photoList" class="photos"></div></section>
-<section id="supplements" class="tab hidden"><div class="card"><h2>Suplementy</h2>
-<input id="supName" placeholder="Nazwa"><input id="supDose" placeholder="Dawka"><button onclick="addSupplement()">Dodaj</button>
-<table><tbody id="supList"></tbody></table></div></section>
-<section id="reminders" class="tab hidden"><div class="card"><h2>Przypomnienia</h2>
-<input id="remTitle" placeholder="Treść"><input id="remTime" type="time" value="20:00">
-<select id="remKind"><option value="text">tekst</option><option value="supplement">suplement</option><option value="run">bieg</option><option value="workout">trening</option></select>
-<select id="remCondition"><option value="">bez warunku</option><option value="steps_below">kroki poniżej</option><option value="protein_below">białko poniżej</option><option value="no_run">brak biegu</option><option value="no_workout">brak treningu</option></select>
-<input id="remThreshold" type="number" placeholder="Próg"><button onclick="addReminder()">Dodaj szkic</button>
-<table><tbody id="remList"></tbody></table></div></section>
-<section id="alerts" class="tab hidden"><div class="card"><h2>Proaktywne alerty</h2>
-<p><small>Jedna zbiorcza wiadomość o 20:00. Ten sam temat najwyżej raz na 7 dni. Funkcja jest domyślnie wyłączona.</small></p>
-<table><thead><tr><th>Temat</th><th>Bieżąca ocena</th><th>Powód</th><th></th></tr></thead><tbody id="alertSettings"></tbody></table></div>
-<div class="card"><h3>Historia zakwalifikowanych tematów</h3><table><tbody id="alertHistory"></tbody></table></div></section></main>
-<script>
-var csrf="";
-function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
-async function api(path,opt){opt=opt||{};opt.headers=opt.headers||{};if(opt.method&&opt.method!="GET"){opt.headers["X-CSRF-Token"]=csrf}var r=await fetch("/dash/api"+path,opt);if(r.status==401){location="/dash";throw Error("auth")}var body=await r.json().catch(function(){return {}});if(!r.ok)throw Error(body.detail||"Błąd");return body}
-function showTab(id){document.querySelectorAll(".tab").forEach(function(x){x.classList.add("hidden")});document.getElementById(id).classList.remove("hidden");if(id=="correlations")loadCorrelations();if(id=="photos")loadPhotos();if(id=="supplements")loadSupplements();if(id=="reminders")loadReminders();if(id=="alerts")loadAlerts()}
-function chart(name,points,key){var vals=points.map(function(x){return x[key]}).filter(function(x){return x!=null});var max=Math.max.apply(null,vals.concat([1]));return '<div class="card"><h3>'+name+'</h3><div class="chart">'+points.map(function(x){return '<div class="bar" title="'+x.date+': '+(x[key]==null?'brak':x[key])+'" style="height:'+((x[key]||0)/max*100)+'%"></div>'}).join("")+'</div></div>'}
-async function loadOverview(){var data=await api("/overview?days="+document.getElementById("days").value);csrf=data.csrf;document.getElementById("summary").innerHTML=Object.keys(data.latest).map(function(k){return '<div><b>'+esc(k)+'</b><br>'+(data.latest[k]==null?'brak':data.latest[k])+'</div>'}).join("");document.getElementById("charts").innerHTML=chart("Waga (kg)",data.series,"weight_kg")+chart("Sen (h)",data.series,"sleep_h")+chart("HRV",data.series,"hrv")+chart("Kroki",data.series,"steps")+chart("Kilometry biegu",data.series,"run_km")+chart("Białko (g)",data.series,"protein_g")}
-async function loadCorrelations(){var data=await api("/correlations");document.getElementById("corr").innerHTML=data.map(function(x){return '<p><b>'+x.label+'</b>: rho '+(x.rho==null?'—':x.rho)+', n='+x.n+' <small>'+x.status+'</small></p>'}).join("")}
-async function loadPhotos(){var data=await api("/photos");document.getElementById("photoList").innerHTML=data.map(function(x){return '<article class="card"><img src="/dash/api/photos/'+x.id+'/file"><b>'+esc(x.captured_date)+' · '+esc(x.view)+'</b><br><small>'+(x.weight_kg||'—')+' kg · '+(x.fat_pct||'—')+'% · '+esc(x.note||'')+'</small><br><button onclick="deletePhoto('+x.id+')">Usuń</button></article>'}).join("")}
-async function uploadPhoto(){var f=document.getElementById("photoFile").files[0];if(!f)return;await api("/photos",{method:"POST",headers:{"Content-Type":f.type,"X-Photo-Date":document.getElementById("photoDate").value,"X-Photo-View":document.getElementById("photoView").value,"X-Photo-Note":encodeURIComponent(document.getElementById("photoNote").value)},body:f});loadPhotos()}
-async function deletePhoto(id){await api("/photos/"+id,{method:"DELETE"});loadPhotos()}
-async function loadSupplements(){var data=await api("/supplements");document.getElementById("supList").innerHTML=data.map(function(x){return '<tr><td>'+esc(x.name)+'</td><td>'+esc(x.dose||'')+'</td><td>'+esc(x.last_status||'—')+'</td><td><button onclick="intake('+x.id+',&quot;taken&quot;)">Wzięte</button><button onclick="intake('+x.id+',&quot;skipped&quot;)">Pominięte</button><button onclick="toggleSupplement('+x.id+','+(!x.active)+')">'+(x.active?'Wyłącz':'Włącz')+'</button></td></tr>'}).join("")}
-async function addSupplement(){await api("/supplements",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:document.getElementById("supName").value,dose:document.getElementById("supDose").value})});loadSupplements()}
-async function intake(id,status){await api("/supplements/"+id+"/intakes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:status})});loadSupplements()}
-async function toggleSupplement(id,active){await api("/supplements/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({active:active})});loadSupplements()}
-async function loadReminders(){var data=await api("/reminders");var unknown=await api("/outbox/unknown");document.getElementById("remList").innerHTML=data.map(function(x){return '<tr><td>'+esc(x.title)+'</td><td>'+esc(x.local_time)+'</td><td>'+esc(x.status)+'</td><td>'+(x.status=="draft"?'<button onclick="activateReminder('+x.id+')">Aktywuj</button>':'<button onclick="toggleReminder('+x.id+',&quot;'+(x.status=="active"?'paused':'active')+'&quot;)">'+(x.status=="active"?'Wstrzymaj':'Wznów')+'</button>')+'</td></tr>'}).join("")+unknown.map(function(x){return '<tr><td>'+esc(x.title)+'</td><td colspan="2">Niepewna wysyłka</td><td><button onclick="retryOutbox('+x.id+')">Wyślij ponownie</button></td></tr>'}).join("")}
-async function addReminder(){var c=document.getElementById("remCondition").value||null;var t=document.getElementById("remThreshold").value;await api("/reminders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:document.getElementById("remTitle").value,kind:document.getElementById("remKind").value,local_time:document.getElementById("remTime").value,condition_type:c,condition_threshold:t?Number(t):null})});loadReminders()}
-async function activateReminder(id){await api("/reminders/"+id+"/activate",{method:"POST"});loadReminders()}
-async function toggleReminder(id,status){await api("/reminders/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:status})});loadReminders()}
-async function retryOutbox(id){await api("/outbox/"+id+"/retry",{method:"POST"});loadReminders()}
-async function loadAlerts(){var data=await api("/proactive-alerts");document.getElementById("alertSettings").innerHTML=data.settings.map(function(x){return '<tr><td>'+esc(x.label)+'</td><td>'+esc(x.evaluation.status)+'</td><td>'+esc(x.evaluation.reason)+'</td><td><button onclick="toggleAlert(&quot;'+x.topic+'&quot;,'+(!x.enabled)+')">'+(x.enabled?'Wstrzymaj':'Aktywuj')+'</button></td></tr>'}).join("");document.getElementById("alertHistory").innerHTML=data.history.map(function(x){return '<tr><td>'+esc(x.label)+'</td><td>'+esc(new Date(x.qualified_at).toLocaleString())+'</td><td>'+esc(x.delivery_status)+'</td></tr>'}).join("")}
-async function toggleAlert(topic,enabled){await api("/proactive-alerts/"+topic,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:enabled})});loadAlerts()}
-async function logout(){await api("/logout",{method:"POST"});location="/dash"}
-document.getElementById("photoDate").value=new Date().toISOString().slice(0,10);loadOverview();
-</script></html>"""
+_PAGE_HEADERS = {"Cache-Control": "private, no-store"}
 
 
 @router.get("", response_class=HTMLResponse)
@@ -300,8 +259,31 @@ def dashboard(request: Request) -> HTMLResponse:
     try:
         _current_session(request)
     except HTTPException:
-        return HTMLResponse(LOGIN_HTML)
-    return HTMLResponse(DASHBOARD_HTML)
+        return HTMLResponse(LOGIN_HTML, headers=_PAGE_HEADERS)
+    return HTMLResponse(DASHBOARD_HTML, headers=_PAGE_HEADERS)
+
+
+@router.get("/static/{asset}")
+def static_asset(asset: str) -> FileResponse:
+    media_type = STATIC_ASSETS.get(asset)
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="Brak zasobu")
+    return FileResponse(
+        STATIC_DIR / asset,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.get("/api/session")
+def session_info(auth: DashboardSession = Depends(_current_session)) -> dict:
+    return {
+        "csrf": auth.csrf_token,
+        "today": local_today().isoformat(),
+        "timezone": str(app_timezone()),
+        "access_mode": settings.dashboard_access_mode,
+        "expires_at": auth.expires_at.isoformat(),
+    }
 
 
 @router.post("/login")
@@ -342,23 +324,18 @@ def login(body: LoginBody, request: Request, response: Response) -> dict:
 
 @router.get("/api/overview")
 def overview(days: int = 30, auth: DashboardSession = Depends(_current_session)) -> dict:
-    days = min(max(days, 7), 90)
-    rows = daily_frame(days=days)
-    serialized = [
-        {key: value.isoformat() if isinstance(value, dt.date) else value for key, value in row.items()}
-        for row in rows
-    ]
-    latest = {}
-    for key, label in (
-        ("sleep_h", "Sen"),
-        ("hrv", "HRV"),
-        ("steps", "Kroki"),
-        ("run_km", "Kilometry biegu"),
-        ("weight_kg", "Waga"),
-        ("protein_g", "Białko"),
-    ):
-        latest[label] = next((row[key] for row in reversed(rows) if row[key] is not None), None)
-    return {"csrf": auth.csrf_token, "latest": latest, "series": serialized}
+    payload = overview_payload(days)
+    # `latest` zostaje dla zgodności z dotychczasowymi klientami/testami.
+    metrics = {metric["key"]: metric["latest"] for metric in payload["metrics"]}
+    payload["latest"] = {
+        "Sen": metrics["sleep_h"],
+        "HRV": metrics["hrv"],
+        "Kroki": metrics["steps"],
+        "Kilometry biegu": metrics["run_km"],
+        "Waga": metrics["weight_kg"],
+        "Białko": metrics["protein_g"],
+    }
+    return {"csrf": auth.csrf_token, **payload}
 
 
 @router.get("/api/correlations")
@@ -367,8 +344,10 @@ def correlations(auth: DashboardSession = Depends(_current_session)) -> list[dic
 
 
 @router.get("/api/photos")
-def photos(auth: DashboardSession = Depends(_current_session)) -> list[dict]:
-    return list_progress_photos()
+def photos(
+    view: str | None = None, auth: DashboardSession = Depends(_current_session)
+) -> list[dict]:
+    return _service_call(list_progress_photos, view=view or None)
 
 
 @router.post("/api/photos")
@@ -474,6 +453,13 @@ def patch_proactive_alert(
 @router.get("/api/reminders")
 def reminders(auth: DashboardSession = Depends(_current_session)) -> list[dict]:
     return list_reminder_rules()
+
+
+@router.get("/api/reminders/history")
+def reminder_history(
+    limit: int = 30, auth: DashboardSession = Depends(_current_session)
+) -> list[dict]:
+    return list_reminder_occurrences(limit=limit)
 
 
 @router.get("/api/outbox/unknown")
