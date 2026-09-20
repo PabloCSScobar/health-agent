@@ -7,6 +7,7 @@ import hashlib
 import secrets
 from collections import defaultdict, deque
 from collections.abc import Callable
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -41,7 +42,6 @@ from health_agent.tools.reminders import (
     update_supplement,
 )
 
-router = APIRouter(prefix="/dash")
 COOKIE_NAME = "health_agent_session"
 _PASSWORD_HASHER = PasswordHasher()
 _login_attempts: dict[str, deque[dt.datetime]] = defaultdict(deque)
@@ -99,6 +99,58 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+IPAddress = IPv4Address | IPv6Address
+IPNetwork = IPv4Network | IPv6Network
+
+
+def _configured_networks(value: str) -> tuple[IPNetwork, ...]:
+    return tuple(
+        ip_network(item.strip(), strict=False)
+        for item in value.split(",")
+        if item.strip()
+    )
+
+
+def _request_ip(request: Request) -> IPAddress | None:
+    if request.client is None:
+        return None
+    try:
+        peer = ip_address(request.client.host)
+    except ValueError:
+        return None
+    trusted = _configured_networks(settings.dashboard_trusted_proxies)
+    current = peer
+    forwarded = [
+        item
+        for header in request.headers.getlist("x-forwarded-for")
+        for item in header.split(",")
+    ]
+    for item in reversed(forwarded):
+        if not any(current in network for network in trusted):
+            break
+        item = item.strip()
+        if item:
+            try:
+                current = ip_address(item)
+            except ValueError:
+                return None
+    return current
+
+
+def _enforce_dashboard_access(request: Request) -> None:
+    if settings.dashboard_access_mode == "disabled":
+        raise HTTPException(status_code=404, detail="Dashboard jest wyłączony")
+    allowed = _configured_networks(settings.dashboard_allowed_ips)
+    if not allowed:
+        return
+    client_ip = _request_ip(request)
+    if client_ip is None or not any(client_ip in network for network in allowed):
+        raise HTTPException(status_code=403, detail="Adres IP nie ma dostępu do dashboardu")
+
+
+router = APIRouter(prefix="/dash", dependencies=[Depends(_enforce_dashboard_access)])
+
+
 def _current_session(request: Request) -> DashboardSession:
     token = request.cookies.get(COOKIE_NAME)
     if not token:
@@ -151,7 +203,8 @@ def _service_call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> An
 
 
 def _client_key(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    client_ip = _request_ip(request)
+    return str(client_ip) if client_ip is not None else "unknown"
 
 
 def _check_login_rate(request: Request) -> None:

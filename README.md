@@ -83,6 +83,12 @@ Uzupełnij `.env` lokalnie. Pełny zestaw ustawień definiuje
 - `DASHBOARD_PASSWORD_HASH` — hash Argon2id generowany przez
   `health-agent hash-password`; w pliku `.env` ujmij go w pojedyncze
   cudzysłowy, aby znaki `$` pozostały literalne.
+- `DASHBOARD_ACCESS_MODE` i `DASHBOARD_URL` — sposób dostępu raportowany przez
+  `/dashboard`: `local`, `tailscale`, `public` albo `disabled`. Opcjonalne
+  `DASHBOARD_ALLOWED_IPS` przyjmuje adresy i CIDR rozdzielone przecinkami;
+  `DASHBOARD_TRUSTED_PROXIES` określa, od których proxy wolno ufać
+  `X-Forwarded-For`. Tryb nie konfiguruje sieci ani reverse proxy: wystawienie
+  adresu nadal wymaga osobnego Tailscale Serve albo Caddy.
 - `ALERTS_*`, `BACKUP_*`, `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*`,
   `CORRELATIONS_*`, `REMINDERS_*` — opcje schedulera; raporty i korelacje są
   domyślnie wyłączone, przypomnienia są włączone, ale działają dopiero po
@@ -138,7 +144,9 @@ uv run python -m health_agent.channels.telegram
 
 Obsługuje tekst, zdjęcia sylwetki, import dokumentów tekstowych oraz
 `/status`, `/cost`, `/profil`, `/sync`, `/daily`, `/weekly`,
-`/foto`, `/suple` i `/przypomnienia`. `/sync` uruchamia ten sam
+`/foto`, `/suple`, `/przypomnienia` i `/dashboard`. Ostatnia komenda podaje
+skonfigurowany adres oraz informuje, czy wymagane jest połączenie Tailscale.
+`/sync` uruchamia ten sam
 bezpieczny catch-up Intervals.icu co scheduler; nie odświeża jeszcze żywienia
 z Fitatu. `/status` pokazuje również środowisko i stan
 schedulera. Reakcje 👍/👎 na odpowiedzi zapisują feedback; komentarz można

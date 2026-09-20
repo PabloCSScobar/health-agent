@@ -365,6 +365,47 @@ def _runtime_status_lines() -> list[str]:
     ]
 
 
+def _dashboard_message() -> str:
+    mode = settings.dashboard_access_mode
+    if mode == "disabled":
+        return "**Dashboard:** wyłączony."
+
+    url = (settings.dashboard_url or "").strip()
+    if mode == "local":
+        lines = [
+            "**Dashboard:** dostęp lokalny.",
+            "Uruchom tunel SSH: `ssh -N -L 8000:127.0.0.1:8000 deploy@ADRES_VPS`",
+            "Następnie otwórz http://127.0.0.1:8000/dash.",
+        ]
+    elif not url:
+        return (
+            "**Dashboard:** tryb dostępu jest ustawiony, ale brakuje "
+            "`DASHBOARD_URL` w konfiguracji."
+        )
+    elif mode == "tailscale":
+        lines = [
+            "**Dashboard:** " + url,
+            "Dostęp jest prywatny przez Tailscale. Urządzenie musi być "
+            "połączone z Twoim tailnetem; adres nie jest otwarty na świat.",
+        ]
+    else:
+        lines = [
+            "**Dashboard:** " + url,
+            "Dostęp jest publiczny przez HTTPS — Tailscale nie jest wymagany. "
+            "Nadal obowiązuje logowanie do dashboardu.",
+        ]
+
+    if settings.dashboard_allowed_ips.strip():
+        lines.append("Dodatkowo obowiązuje allowlista adresów IP.")
+    return "\n".join(lines)
+
+
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update) or not update.message:
+        return
+    await _tracked_reply(update.message, _dashboard_message(), "dashboard")
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update):
         return
@@ -647,6 +688,7 @@ def build_bot():
     app.add_handler(CommandHandler("foto", cmd_foto))
     app.add_handler(CommandHandler("suple", cmd_suple))
     app.add_handler(CommandHandler("przypomnienia", cmd_przypomnienia))
+    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(?:rule|reminder):"))
     app.add_handler(MessageReactionHandler(handle_reaction))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

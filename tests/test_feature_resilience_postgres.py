@@ -142,7 +142,9 @@ class FeatureResiliencePostgresTest(unittest.TestCase):
             self.assertEqual(outbox.attempts, 1)
 
     def test_send_failure_is_quarantined_until_manual_retry(self) -> None:
-        now = dt.datetime(2026, 9, 19, 18, 0, tzinfo=dt.timezone.utc)
+        # retry_unknown_notification ustawia available_at według prawdziwego
+        # zegara, więc syntetyczna data nie może pozostać na stałe w przeszłości.
+        now = dt.datetime.now(dt.timezone.utc)
         outbox_id = self._queue_text_reminder(now)
 
         class FailingBot:

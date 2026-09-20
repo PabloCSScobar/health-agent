@@ -45,15 +45,30 @@ Wpisz wynik do `.env` jako wartość w pojedynczych cudzysłowach, np.
 `DASHBOARD_PASSWORD_HASH='$argon2id$...'`. Na publicznym VPS pozostaw
 `DASHBOARD_COOKIE_SECURE=true`.
 
+Ustaw też jawny tryb i adres zwracany przez telegramowe `/dashboard`, np.:
+
+```env
+DASHBOARD_ACCESS_MODE=tailscale
+DASHBOARD_URL=https://health-agent-vps.example.ts.net/dash
+```
+
+Pozostałe tryby to `local`, `public` i `disabled`. Opcjonalna
+`DASHBOARD_ALLOWED_IPS` jest listą adresów lub CIDR rozdzielonych przecinkami.
+Za reverse proxy ustaw `DASHBOARD_TRUSTED_PROXIES` na dokładne adresy proxy;
+bez tego aplikacja celowo ignoruje `X-Forwarded-For`. W Tailscale podstawową
+kontrolą dostępu powinny pozostać reguły tailnetu, a allowlista IP jest tylko
+dodatkową warstwą.
+
 Dla Tailscale można wystawić lokalne API poleceniem wykonywanym na hoście:
 
 ```bash
-sudo tailscale serve --bg http://127.0.0.1:8000
+sudo tailscale serve --bg --https=443 --set-path=/dash http://127.0.0.1:8000/dash
 ```
 
-Adres HTTPS ustaw jako bazę webhooka w telefonie. Dashboard jest pod
-`https://adres/dash`. Nie wystawiaj portu 8000 bezpośrednio; publiczny ma
-być wyłącznie reverse proxy z TLS.
+Ta reguła udostępnia w tailnecie wyłącznie dashboard pod
+`https://adres/dash`. Nie obsługuje webhooka Health Connect; dla niego zachowaj
+osobną, publiczną regułę Caddy albo dodaj osobny prywatny mount, jeśli telefon
+zawsze należy do tailnetu. Nie wystawiaj portu 8000 bezpośrednio.
 
 ## Istniejąca baza
 

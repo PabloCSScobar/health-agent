@@ -45,7 +45,9 @@ zaznaczono inaczej.
   specjalistów i dołączanie profilu/digestu wiedzy.
 - `prompts/{running,strength,nutrition,body,recovery}.md`: metodologia domenowa.
 - `agents/importer.py`: ekstrakcja, rekoncyliacja, raport i cofnięcie importu.
-- `channels/telegram.py`: autoryzacja czatu, tekst/dokumenty, historia, komendy i reakcje feedbacku.
+- `channels/telegram.py`: autoryzacja czatu, tekst/dokumenty, historia, komendy
+  i reakcje feedbacku. `/dashboard` czyta tryb i adres z konfiguracji; nie
+  wykrywa dostępności sieci ani nie przełącza reverse proxy.
 - `agents/summaries.py`: równoległe raporty daily/weekly z czterech specjalistów, spięte wspólnym korzeniem `agent_runs`.
 - `cli/main.py`: parser komend i wywołanie istniejących funkcji aplikacji.
 - `config/agents.yaml` w repo: wybór modeli per agent, wczytywany przez
@@ -117,6 +119,12 @@ agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
   granic dnia sprawdzaj UTC/Europe/Warsaw.
 - Development i production mają osobne bazy oraz boty/tokeny Telegrama.
   Wspólny token przy dwóch procesach long polling powoduje konflikt.
+- Tryb dashboardu (`local`, `tailscale`, `public`, `disabled`) opisuje
+  oczekiwany ingress, steruje odpowiedzią Telegrama i pozwala zablokować
+  router, ale sam nie otwiera portów. Tailscale Serve lub Caddy pozostają
+  konfiguracją hosta. Opcjonalna allowlista CIDR ufa `X-Forwarded-For` tylko
+  od adresów wpisanych w `DASHBOARD_TRUSTED_PROXIES`; bez zaufanego proxy
+  używa bezpośredniego adresu klienta.
 - Alert braku treningu wymaga świeżego zakresu Intervals obejmującego pełne
   96 godzin i uwzględnia ręczne wpisy siłowe. Białko dotyczy zapisanych danych,
   a alert wagi tylko celu redukcji. To obserwacje, nie monitoring ani diagnoza.

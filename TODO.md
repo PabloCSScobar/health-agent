@@ -14,9 +14,12 @@ albo oceny na rzeczywistych danych. Checkbox główny oznacza ukończony kod;
 zagnieżdżony checkbox oznacza pozostały odbiór użytkownika.
 
 - [x] **Dashboard i dostęp** — logowanie Argon2id, sesje, CSRF/Origin,
-  wykresy oraz zarządzanie zdjęciami, suplementami i przypomnieniami.
+  wykresy oraz zarządzanie zdjęciami, suplementami i przypomnieniami;
+  `/dashboard` podaje konfigurowalny adres i tryb dostępu, a aplikacja obsługuje
+  opcjonalną allowlistę IP za jawnie zaufanym proxy.
   - [ ] **Weryfikacja użytkownika:** po wdrożeniu ustawić hash hasła, zalogować
-    się przez publiczny HTTPS i ocenić dashboard na telefonie.
+    się przez skonfigurowany HTTPS (Tailscale albo publiczny, zależnie od trybu)
+    i ocenić dashboard na telefonie.
 - [x] **Zdjęcia sylwetki** — Telegram, dashboard, deduplikacja, usuwanie,
   lokalny backup z manifestem SHA-256; zdjęcia nie trafiają do LLM.
   - [ ] **Weryfikacja użytkownika:** wysłać prawdziwe zdjęcie z podpisem,

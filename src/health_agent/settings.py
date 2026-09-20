@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
 
     # --- Dashboard i archiwum zdjęć ---
     dashboard_password_hash: str | None = None
+    dashboard_access_mode: Literal["disabled", "local", "tailscale", "public"] = "local"
+    dashboard_url: str | None = None
+    dashboard_allowed_ips: str = ""
+    dashboard_trusted_proxies: str = "127.0.0.1/32,::1/128"
     dashboard_cookie_secure: bool = True
     dashboard_session_idle_hours: int = 12
     dashboard_session_absolute_days: int = 7
@@ -83,6 +88,17 @@ class Settings(BaseSettings):
     backup_dir: str = "backups"
     backup_interval_hours: int = 24
     backup_retention_days: int = 14
+
+    @field_validator("dashboard_allowed_ips", "dashboard_trusted_proxies")
+    @classmethod
+    def validate_dashboard_networks(cls, value: str) -> str:
+        from ipaddress import ip_network
+
+        for item in value.split(","):
+            item = item.strip()
+            if item:
+                ip_network(item, strict=False)
+        return value
 
 
 settings = Settings()
