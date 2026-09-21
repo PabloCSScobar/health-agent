@@ -21,11 +21,8 @@ import tarfile
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 
-from health_agent.db.models import BodyComposition, NutritionDay, Workout
-from health_agent.db.session import get_session
 from health_agent.ingest.sync import sync_intervals
 from health_agent.settings import settings
 from health_agent.tools.memory import recall_all, remember
@@ -167,58 +164,6 @@ def process_reminders() -> None:
         logger.exception("Cykl przypomnień nieudany")
 
 
-def check_stale_sources() -> None:
-    """Alert na Telegram, jeśli któreś źródło nie zsynchronizowało się od
-    `settings.alerts_stale_hours` godzin (patrz plan, sekcja 9: apka Health
-    Connect Webhook ma lookback tylko 48h - dłuższa przerwa w syncu, np.
-    wyłączony Tailscale na telefonie, oznacza BEZPOWROTNĄ utratę danych za
-    ten okres, więc wczesne ostrzeżenie ma realną wartość).
-
-    Jeden alert per źródło per dzień (zapamiętane w agent_memory pod
-    pseudo-agentem "system_alerts") - inaczej przy source martwym przez
-    tydzień dostałbyś ten sam alert co `alerts_check_interval_minutes`."""
-    if not settings.alerts_enabled:
-        return
-
-    threshold = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=settings.alerts_stale_hours)
-    with get_session() as session:
-        last_workout = session.execute(select(func.max(Workout.started_at))).scalar()
-        last_body = session.execute(select(func.max(BodyComposition.measured_at))).scalar()
-        last_nutrition_date = session.execute(select(func.max(NutritionDay.date))).scalar()
-
-    last_nutrition = (
-        dt.datetime.combine(last_nutrition_date, dt.time.min, tzinfo=dt.timezone.utc)
-        if last_nutrition_date
-        else None
-    )
-
-    sources = [
-        ("workouts", "treningi (Intervals.icu)", last_workout),
-        ("body_composition", "waga/skład ciała (Health Connect)", last_body),
-        ("nutrition", "odżywianie (Health Connect)", last_nutrition),
-    ]
-    stale = [(key, label, last) for key, label, last in sources if last is None or last < threshold]
-    if not stale:
-        return
-
-    today_str = dt.date.today().isoformat()
-    already_alerted = recall_all("system_alerts")
-    to_notify = [(key, label, last) for key, label, last in stale if already_alerted.get(key) != today_str]
-    if not to_notify:
-        return
-
-    lines = [f"⚠️ Brak nowych danych z ostatnich {settings.alerts_stale_hours}h:"]
-    for key, label, last in to_notify:
-        lines.append(f"- {label}: ostatnio {last.date().isoformat() if last else 'nigdy'}")
-        remember("system_alerts", key, today_str)
-
-    try:
-        _send_telegram_message("\n".join(lines))
-        logger.warning("Alert o martwych źródłach wysłany: %s", [k for k, _, _ in to_notify])
-    except Exception:
-        logger.exception("Nie udało się wysłać alertu o martwych źródłach")
-
-
 def backup_database() -> Path | None:
     """Wykonuje ``pg_dump`` bazy wskazanej przez ``DATABASE_URL``.
 
@@ -335,13 +280,6 @@ def build_scheduler() -> BackgroundScheduler:
         next_run_time=dt.datetime.now(dt.timezone.utc),  # od razu przy starcie, potem co godzinę
         id="poll_intervals_icu",
     )
-    if settings.alerts_enabled:
-        scheduler.add_job(
-            check_stale_sources,
-            "interval",
-            minutes=settings.alerts_check_interval_minutes,
-            id="check_stale_sources",
-        )
     if settings.backup_enabled:
         scheduler.add_job(
             backup_database,

@@ -215,9 +215,10 @@ Zdjęcia nigdy nie opuszczają lokalnej maszyny (nie lecą do API Anthropic).
      wcześniej, że nie eksportuje HRV/snu do Health Connect - do
      re-weryfikacji, mogło się zmienić), albo inna platforma z integracją
      Suunto (Garmin Connect nie dotyczy, to inny ekosystem).
-  4. Do czasu decyzji: alert o martwym źródle (już działa, próg 48h) jest
-     jedyną siatką bezpieczeństwa - żadna dodatkowa praca nie jest pilna,
-     dopóki się nie powtórzy.
+  4. Wycofano dawny alert 48 h: mylił brak nowych rekordów z awarią źródła,
+     nie był widoczny w dashboardzie i przez dedup według UTC potrafił pisać
+     w nocy. Ewentualny przyszły monitoring źródeł musi bazować na heartbeat
+     synchronizacji i mieć osobne, jawne ustawienie.
 - [x] **Autostart aplikacji i przenośne wdrożenie.** Dockerfile + Compose
   uruchamiają bazę, migracje, pojedyncze API ze schedulerem i bota; procesy
   mają `restart: unless-stopped`. Są skrypty instalacji, diagnostyki i

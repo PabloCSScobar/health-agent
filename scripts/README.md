@@ -410,14 +410,17 @@ regresji po drodze (każdy krok zweryfikowany pełnym przebiegiem
 Intervals.icu - żyje w `api/app.py`, NIE w procesie bota Telegram;
 jeśli kiedyś proces webhooka przestanie działać ciągle, te joby też
 przestaną się odpalać, warto o tym pamiętać przy Fazie 6).
-- `check_stale_sources`: sprawdza `MAX(started_at)`/`MAX(measured_at)`/
+- `check_stale_sources` (**wycofany 2026-09-21**): historycznie sprawdzał
+  `MAX(started_at)`/`MAX(measured_at)`/
   `MAX(date)` dla workouts/body_composition/nutrition_days, alert na
   Telegram (bezpośrednio przez `telegram.Bot`, bez potrzeby bycia
   "wewnątrz" Application) jeśli źródło martwe > `ALERTS_STALE_HOURS`.
   Dedup: jeden alert/źródło/dzień, zapamiętany w `agent_memory` pod
   pseudo-agentem `"system_alerts"` (bez tego alert leciałby co godzinę
   dla martwego źródła). Zweryfikowane end-to-end live (realna wiadomość
-  doszła na Telegram przy wymuszonym `alerts_stale_hours=0`).
+  doszła na Telegram przy wymuszonym `alerts_stale_hours=0`). Mechanizm
+  został później usunięty: mylił brak nowych rekordów z awarią synchronizacji,
+  nie podlegał ustawieniom dashboardu i mógł wysyłać po zmianie daty UTC.
 - `backup_database`: `docker compose exec -T db pg_dump -U health_agent
   health_agent` (NIE lokalny `pg_dump` - niezainstalowany na hoście w
   tym środowisku, i tak Postgres żyje tylko w Dockerze) -> gzip ->
@@ -425,10 +428,10 @@ przestaną się odpalać, warto o tym pamiętać przy Fazie 6).
   realne dane zdrowotne, nie mogą trafić do repo). Retencja: usuwa
   pliki starsze niż `BACKUP_RETENTION_DAYS`. Zweryfikowane: prawdziwy
   dump, 92KB, poprawny SQL po `zcat`.
-- Wszystko konfigurowalne przez `Settings`/`.env`
-  (`ALERTS_ENABLED/STALE_HOURS/CHECK_INTERVAL_MINUTES`,
-  `BACKUP_ENABLED/DIR/INTERVAL_HOURS/RETENTION_DAYS`), z sensownymi
-  domyślnymi wartościami - `.env.example` udokumentowany.
+- W pierwotnej wersji alert i backup były konfigurowalne przez
+  `Settings`/`.env`. Ustawienia `ALERTS_ENABLED`, `ALERTS_STALE_HOURS` i
+  `ALERTS_CHECK_INTERVAL_MINUTES` zostały wycofane razem z alertem;
+  `BACKUP_ENABLED/DIR/INTERVAL_HOURS/RETENTION_DAYS` pozostają aktywne.
 - Poranny/wieczorny raport (reszta Fazy 5) świadomie pominięty na razie
   na prośbę użytkownika.
 

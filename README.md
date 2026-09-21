@@ -89,8 +89,8 @@ Uzupełnij `.env` lokalnie. Pełny zestaw ustawień definiuje
   `DASHBOARD_TRUSTED_PROXIES` określa, od których proxy wolno ufać
   `X-Forwarded-For`. Tryb nie konfiguruje sieci ani reverse proxy: wystawienie
   adresu nadal wymaga osobnego Tailscale Serve albo Caddy.
-- `ALERTS_*`, `BACKUP_*`, `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*`,
-  `CORRELATIONS_*`, `REMINDERS_*` — opcje schedulera; raporty i korelacje są
+- `BACKUP_*`, `DAILY_SUMMARY_*`, `WEEKLY_SUMMARY_*`, `CORRELATIONS_*`,
+  `REMINDERS_*` — opcje schedulera; raporty i korelacje są
   domyślnie wyłączone, przypomnienia są włączone, ale działają dopiero po
   utworzeniu i potwierdzeniu reguły.
 - `FITATU_*` — obecnie dla eksperymentalnego skryptu API, nie głównej ingestii.

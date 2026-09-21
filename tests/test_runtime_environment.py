@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from health_agent.api import app as app_module
 from health_agent.channels import telegram
+from health_agent import scheduler as scheduler_module
 from health_agent.settings import Settings
 
 
@@ -18,6 +19,18 @@ class RuntimeEnvironmentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings.app_env, "development")
         self.assertFalse(settings.scheduler_enabled)
         self.assertEqual(settings.dashboard_access_mode, "local")
+
+    def test_scheduler_has_no_unmanaged_stale_source_alert(self) -> None:
+        with (
+            patch.object(scheduler_module.settings, "backup_enabled", False),
+            patch.object(scheduler_module.settings, "daily_summary_enabled", False),
+            patch.object(scheduler_module.settings, "weekly_summary_enabled", False),
+            patch.object(scheduler_module.settings, "correlations_enabled", False),
+            patch.object(scheduler_module.settings, "reminders_enabled", False),
+        ):
+            scheduler = scheduler_module.build_scheduler()
+
+        self.assertEqual([job.id for job in scheduler.get_jobs()], ["poll_intervals_icu"])
 
     def test_settings_reject_invalid_dashboard_network(self) -> None:
         with self.assertRaises(ValueError):

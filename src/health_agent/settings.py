@@ -68,11 +68,6 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:14b"
     ollama_base_url: str = "http://localhost:11434/v1"
 
-    # --- Alerty (martwe źródła danych, patrz scheduler.py) ---
-    alerts_enabled: bool = True
-    alerts_stale_hours: int = 48
-    alerts_check_interval_minutes: int = 60
-
     # --- Automatyczne podsumowania na Telegramie ---
     summary_timezone: str = "Europe/Warsaw"
     daily_summary_enabled: bool = False

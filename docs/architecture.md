@@ -89,8 +89,9 @@ konfiguruje YAML; nie kopiuj zmiennych nazw modeli do instrukcji.
 - `manual_logs`: ręczne wpisy i oryginalny tekst; atomowy batch i dedup są w
   `tools/manual_batch.py`, a `tools/manual.py` zachowuje zgodność pojedynczego
   wpisu. Recovery czyta historię `wellbeing` (1-5) i `note`.
-- `agent_memory`: profil pod `user_profile` i dedup alertów pod
-  `system_alerts` i podsumowań pod `system_summaries`. Komentarze sugerujące wyłącznie profil są niepełne.
+- `agent_memory`: profil pod `user_profile`, dedup podsumowań pod
+  `system_summaries` i historyczne znaczniki wycofanego alertu pod
+  `system_alerts`. Komentarze sugerujące wyłącznie profil są niepełne.
 - `documents`: oryginały importowanych notatek, data, skrót i hash dedup.
 - `knowledge`: fakty/wnioski z domeną, pochodzeniem, datą, pewnością,
   aktywnością i `superseded_by`; digest plus narzędzia odczytu szczegółów.
@@ -142,6 +143,10 @@ agentów programistycznych utrzymujemy oddzielnie w dokumentach repozytorium.
 - Alert braku treningu wymaga świeżego zakresu Intervals obejmującego pełne
   96 godzin i uwzględnia ręczne wpisy siłowe. Białko dotyczy zapisanych danych,
   a alert wagi tylko celu redukcji. To obserwacje, nie monitoring ani diagnoza.
+- Wycofany alert `check_stale_sources` nie jest rejestrowany w schedulerze:
+  mieszał brak nowych pomiarów z awarią synchronizacji, działał niezależnie
+  od dashboardu i mógł wysyłać wiadomości po zmianie daty UTC. Wszystkie
+  użytkowe alerty są teraz kontrolowane wyłącznie w sekcji dashboardu.
 - Ewaluacja usuwa `agent_runs` i ingeruje w dane; wymaga `APP_ENV=test`, a
   `all` nie obejmuje coaches/import.
 - `undo-import` nie przywraca profilu. Część przywracania nieaktywnych
