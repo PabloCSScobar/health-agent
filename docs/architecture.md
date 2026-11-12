@@ -63,6 +63,30 @@ zaznaczono inaczej.
 - `config/agents.yaml` w repo: wybór modeli per agent, wczytywany przez
   `agents/base.py` przy imporcie; zmiana wymaga restartu procesu.
 
+## Serwer MCP i tryb czatu
+
+`mcp/server.py` to osobny proces (usługa `mcp` w Compose, port 8765,
+`SCHEDULER_ENABLED=false`, bez bota) z serwerem MCP `health` (SDK `mcp` 2.x,
+`MCPServer`, streamable HTTP, `stateless_http`, JSON). Każde narzędzie to cienki
+wrapper funkcji z `tools/`: wykonuje ją w wątku (`asyncio.to_thread`), zamienia
+wynik na JSON (`to_jsonable`: daty, Decimal, modele pydantic, NaN -> null) i
+mapuje `ValueError`/`LookupError` na `ToolError` z polskim komunikatem.
+Sygnatury i docstringi pochodzą z oryginałów; wyjątki to narzędzia z opisem
+pod orchestratora (`log_manual_entries`, `propose_reminder_rule`) oraz nowe
+(`remember_fact` z parametrem `domain`, `record_supplement_intake`,
+`activate_reminder_rule`, `save_document`, `get_data_freshness`).
+`forget_knowledge`/`restore_knowledge` mieszkają teraz w `tools/knowledge.py`
+(registry importuje je stamtąd). Autoryzację robi `BearerAuthMiddleware`
+(`hmac.compare_digest`, pusty `MCP_TOKEN` = 401); `GET /health` jest publiczny.
+Ochrona DNS rebinding akceptuje tylko hosty z `MCP_ALLOWED_HOSTS`. Pułapka:
+`StreamableHTTPSessionManager.run()` działa raz na instancję aplikacji, więc
+testy budują aplikację przez `build_app()`.
+
+`TELEGRAM_CHAT_MODE=openbot` wyłącza całą ścieżkę LLM w `channels/telegram.py`
+(`handle_message`, `handle_document`, `/daily`, `/weekly`) oraz
+`scheduler._send_summary`; reszta bota jest deterministyczna. Domyślne
+`agents` zachowuje dotychczasowe zachowanie.
+
 ## Agenci aplikacji
 
 Orchestrator kieruje do `running`, `strength`, `nutrition`, `body`,

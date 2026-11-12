@@ -8,6 +8,13 @@ Historia decyzji i znalezisk technicznych: `scripts/README.md`.
 
 ## Gotowe technicznie — wymagają weryfikacji użytkownika
 
+- [x] **Serwer MCP i przełącznik czatu (2026-11-12)** — usługa `mcp`
+  (`mcp/server.py`, Bearer `MCP_TOKEN`) wystawia narzędzia danych dla agenta
+  „Zdrowie” w OpenBot; `TELEGRAM_CHAT_MODE=openbot` wyłącza LLM w bocie.
+  - [ ] **Weryfikacja użytkownika:** wdrożyć na VPS, ustawić `MCP_TOKEN`,
+    wystawić `tailscale serve` na `/mcp`, podłączyć OpenBot, dopiero potem
+    przełączyć `TELEGRAM_CHAT_MODE=openbot`. Nie uruchomiono na prawdziwej bazie.
+
 Pakiet jest zaimplementowany i pokryty testami (`56f46c4`, `374eb44`,
 `c68087b`), ale poniższe punkty wymagają wdrożenia aktualnych commitów na VPS
 albo oceny na rzeczywistych danych. Checkbox główny oznacza ukończony kod;

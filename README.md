@@ -102,9 +102,80 @@ docker compose up -d db
 uv run alembic upgrade head
 ```
 
-Pełne `docker compose up -d` uruchamia także migrację, API i bota. Porty bazy
-i API są publikowane wyłącznie na `127.0.0.1`; dostęp HTTPS zapewnia Tailscale
+Pełne `docker compose up -d` uruchamia także migrację, API, serwer MCP i bota.
+Porty bazy, API i MCP są publikowane wyłącznie na `127.0.0.1`; dostęp HTTPS zapewnia Tailscale
 działający na hoście.
+
+## Serwer MCP i przełącznik czatu Telegrama
+
+Aplikacja może działać jako sama warstwa danych, a rozmowę prowadzi agent
+„Zdrowie” w OpenBot (Claude Code). Serwer MCP (`src/health_agent/mcp/server.py`,
+nazwa `health`, streamable HTTP, bezstanowy, odpowiedzi JSON) udostępnia
+narzędzia z `tools/` pod tymi samymi nazwami, co dawniej agenci LLM, oraz
+kilka nowych. Nie ma w nim routingu (`delegate`, `ask_agent`). Proces nie
+uruchamia schedulera ani bota.
+
+Narzędzia do odczytu: `get_running_profile`, `get_weekly_running_load`,
+`get_intensity_distribution`, `get_efficiency_trend`, `get_fitness_form`,
+`analyze_run`, `find_comparable_runs`, `get_latest_workout`,
+`get_workouts_on_date`, `get_workouts`, `get_correlations`,
+`get_strength_sessions`, `get_exercise_progress`, `get_strength_weekly_volume`,
+`get_nutrition_summary`, `get_energy_balance`, `find_foods`, `get_nutrition_day`,
+`get_nutrition_range`, `get_body_trend`, `get_body_composition_latest`,
+`get_body_composition_trend`, `get_recovery_baseline`, `get_recovery_day`,
+`get_recovery_range`, `get_wellbeing_history`, `estimate_daily_expenditure`,
+`get_knowledge`, `list_documents`, `read_document`, `get_user_profile`,
+`list_supplements`, `list_reminder_rules`, `get_data_freshness`.
+
+Narzędzia zapisujące: `log_manual_entries`, `set_user_profile_facts`,
+`remember_fact`, `forget_knowledge`, `restore_knowledge`, `add_supplement`,
+`record_supplement_intake`, `propose_reminder_rule` (tylko szkic),
+`activate_reminder_rule` (wyłącznie po jawnym potwierdzeniu szkicu przez
+użytkownika) i `save_document` (oryginał notatki do `documents` z deduplikacją
+sha256, bez LLM i bez ekstrakcji faktów).
+
+Zmienne środowiskowe (`.env`):
+
+- `MCP_TOKEN` — wymagany sekret; klient wysyła `Authorization: Bearer <token>`.
+  Pusty token oznacza odrzucanie każdego żądania (401) i ostrzeżenie w logu.
+  Wygeneruj np. `openssl rand -hex 32`.
+- `MCP_ALLOWED_HOSTS` — lista nagłówków `Host` akceptowanych przez ochronę
+  przed DNS rebinding, rozdzielona przecinkami. Domyślnie
+  `health-agent-vps.tail8242a2.ts.net,127.0.0.1:8765,localhost:8765`.
+- `MCP_PORT` — port publikowany na `127.0.0.1` hosta (domyślnie 8765).
+- `TELEGRAM_CHAT_MODE` — `agents` (domyślnie: czat obsługują agenci tej
+  aplikacji) albo `openbot`.
+
+Uruchomienie lokalne bez Dockera:
+
+```bash
+MCP_TOKEN=lokalny-token uv run uvicorn health_agent.mcp.server:app --host 127.0.0.1 --port 8765
+curl http://127.0.0.1:8765/health   # {"status":"ok"} bez tokenu
+```
+
+Wystawienie w tailnecie (na hoście VPS; serwer słucha tylko na `127.0.0.1`):
+
+```bash
+sudo tailscale serve --bg --https=443 --set-path=/mcp http://127.0.0.1:8765/mcp
+```
+
+Połączenie z OpenBot / Claude Code (token z `.env` serwera):
+
+```bash
+claude mcp add --transport http health https://health-agent-vps.tail8242a2.ts.net/mcp \
+  --header "Authorization: Bearer $MCP_TOKEN"
+```
+
+Odpowiednik w `.mcp.json`: `{"mcpServers": {"health": {"type": "http", "url":
+"https://health-agent-vps.tail8242a2.ts.net/mcp", "headers": {"Authorization":
+"Bearer ${MCP_TOKEN}"}}}}`.
+
+Przy `TELEGRAM_CHAT_MODE=openbot` bot nie wywołuje żadnego LLM: wiadomości
+tekstowe, import plików oraz `/daily` i `/weekly` dostają jedną linię z
+informacją, że czat przeniesiono do OpenBot, a automatyczne podsumowania
+schedulera są pomijane. Bez zmian działają przypomnienia z przyciskami,
+reakcje (feedback), zdjęcia do archiwum oraz `/status`, `/sync`, `/foto`,
+`/suple`, `/przypomnienia`, `/dashboard`, `/profil` (tylko podgląd) i `/cost`.
 
 ## Natywne uruchamianie aplikacji
 

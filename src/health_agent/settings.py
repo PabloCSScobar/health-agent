@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # --- Telegram ---
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    # agents = czat obsługują agenci LLM tej aplikacji; openbot = bot nie
+    # wywołuje LLM, czat przeniesiono do agenta „Zdrowie” w OpenBot.
+    telegram_chat_mode: Literal["agents", "openbot"] = "agents"
+
+    # --- Serwer MCP (src/health_agent/mcp/server.py) ---
+    mcp_token: str = ""  # pusty = serwer odrzuca każde żądanie (401)
+    mcp_allowed_hosts: str = "health-agent-vps.tail8242a2.ts.net,127.0.0.1:8765,localhost:8765"
 
     # --- Dashboard i archiwum zdjęć ---
     dashboard_password_hash: str | None = None

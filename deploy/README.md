@@ -1,7 +1,7 @@
 # Wdrożenie
 
 Ten katalog obsługuje ten sam wariant Docker Compose na WSL i VPS. Docker
-zarządza autostartem bazy, API i bota przez `restart: unless-stopped`.
+zarządza autostartem bazy, API, serwera MCP i bota przez `restart: unless-stopped`.
 API ma dokładnie jeden worker; na production działa w nim scheduler, a na
 development scheduler jest domyślnie wyłączony.
 
@@ -91,6 +91,14 @@ gunzip -c backup.sql.gz | docker compose exec -T db psql -U health_agent -d heal
 Najpierw przetestuj odtworzenie na bazie testowej. Nie używaj tego polecenia
 na właściwej bazie bez zweryfikowanego backupu.
 
+## Serwer MCP
+
+Usługa `mcp` (obraz wspólny z API, `SCHEDULER_ENABLED=false`) słucha na
+`127.0.0.1:${MCP_PORT:-8765}`. Wymaga `MCP_TOKEN` w `.env` (`doctor.sh` sprawdza
+jego obecność i `/health`). Wystawienie w tailnecie:
+`sudo tailscale serve --bg --https=443 --set-path=/mcp http://127.0.0.1:8765/mcp`.
+Szczegóły i zmienne: sekcja „Serwer MCP” w `README.md`.
+
 ## Utrzymanie
 
 ```bash
@@ -98,6 +106,7 @@ na właściwej bazie bez zweryfikowanego backupu.
 ./deploy/doctor.sh
 docker compose logs -f api
 docker compose logs -f bot
+docker compose logs -f mcp
 ./deploy/update.sh
 ```
 
@@ -105,7 +114,7 @@ docker compose logs -f bot
 syntetyczny rekord, wykonuje prawdziwy backup i odtwarza go do drugiej bazy.
 Po zakończeniu usuwa swoje tymczasowe kontenery, sieć i wolumen.
 
-`update.sh` buduje obraz, wykonuje backup przed migracją, zatrzymuje API i bota,
+`update.sh` buduje obraz, wykonuje backup przed migracją, zatrzymuje API, bota i MCP,
 stosuje migracje, uruchamia usługi i czeka na ich gotowość. Jeśli migracja
 się nie powiedzie, procesy pozostają zatrzymane do ręcznej diagnozy. Kod
 należy wcześniej pobrać świadomie przez `git pull --ff-only`; skrypt nie

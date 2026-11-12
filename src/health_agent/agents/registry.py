@@ -19,7 +19,15 @@ from health_agent.tools.body import get_body_composition_latest, get_body_compos
 from health_agent.tools.correlations import get_correlations
 from health_agent.tools.energy import estimate_daily_expenditure
 from health_agent.tools.manual_batch import log_manual_entries
-from health_agent.tools.knowledge import add_knowledge, get_knowledge, knowledge_digest, list_documents, read_document, set_knowledge_active
+from health_agent.tools.knowledge import (
+    add_knowledge,
+    forget_knowledge,
+    get_knowledge,
+    knowledge_digest,
+    list_documents,
+    read_document,
+    restore_knowledge,
+)
 from health_agent.tools.nutrition import (
     find_foods,
     get_energy_balance,
@@ -315,21 +323,6 @@ async def _delegate(agent_name: str, question: str) -> str:
         raise ValueError(f"Nieznany agent '{agent_name}'. Dostępni: {list(SPECIALISTS)}")
     full = build_full_agent(agent_name)
     return await run_agent(full, agent_name, question)
-
-
-def forget_knowledge(ids: list[int]) -> str:
-    """Dezaktywuj wpisy wiedzy o podanych numerach (#id z listy po imporcie
-    albo z get_knowledge) - gdy użytkownik mówi 'usuń 3 i 7', 'to
-    nieprawda', 'zapomnij o kontuzji kolana'. Odwracalne (restore_knowledge)."""
-    changed = set_knowledge_active(ids, False)
-    return f"Usunięto z aktywnej wiedzy: {changed}" if changed else "Nic nie zmieniono (nieznane id albo już nieaktywne)."
-
-
-def restore_knowledge(ids: list[int]) -> str:
-    """Przywróć wcześniej usunięte/zastąpione wpisy wiedzy ('przywróć 12',
-    'cofnij')."""
-    changed = set_knowledge_active(ids, True)
-    return f"Przywrócono: {changed}" if changed else "Nic nie zmieniono."
 
 
 _GREETING_RE = re.compile(

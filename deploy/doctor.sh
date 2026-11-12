@@ -23,7 +23,7 @@ docker compose config --quiet
 
 echo "== Usługi =="
 docker compose ps
-for service in db api bot; do
+for service in db api bot mcp; do
     require_running "$service"
 done
 
@@ -42,6 +42,10 @@ echo "Alembic: $current_revision"
 echo "== API =="
 docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
 docker compose exec -T api python -c "from health_agent.settings import settings; assert settings.app_env != 'production' or settings.dashboard_password_hash, 'Brak DASHBOARD_PASSWORD_HASH na production'"
+
+echo "== MCP =="
+docker compose exec -T mcp python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).read()"
+docker compose exec -T mcp python -c "from health_agent.settings import settings; assert settings.mcp_token, 'Brak MCP_TOKEN - serwer MCP odrzuca każde żądanie'"
 
 echo "== Katalog backupów =="
 docker compose exec -T api python -c "from pathlib import Path; p=Path('/app/backups/.write-test'); p.write_text('ok'); p.unlink()"

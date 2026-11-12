@@ -11,9 +11,9 @@ echo "== Backup przed migracją =="
 docker compose run --rm --no-deps api python -c "from health_agent.scheduler import backup_database; from health_agent.settings import settings; settings.backup_enabled = True; path = backup_database(); assert path is not None, 'Backup bazy nie powiódł się'; print(path)"
 
 echo "== Migracje =="
-docker compose stop api bot
+docker compose stop api bot mcp
 if ! docker compose run --rm migrate; then
-    echo "Migracja nie powiodła się. API i bot pozostają zatrzymane; sprawdź log oraz backup przed ponownym uruchomieniem." >&2
+    echo "Migracja nie powiodła się. API, bot i MCP pozostają zatrzymane; sprawdź log oraz backup przed ponownym uruchomieniem." >&2
     exit 1
 fi
 

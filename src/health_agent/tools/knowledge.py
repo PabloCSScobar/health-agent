@@ -75,6 +75,21 @@ def set_knowledge_active(ids: list[int], active: bool) -> list[int]:
     return changed
 
 
+def forget_knowledge(ids: list[int]) -> str:
+    """Dezaktywuj wpisy wiedzy o podanych numerach (#id z listy po imporcie
+    albo z get_knowledge) - gdy użytkownik mówi 'usuń 3 i 7', 'to
+    nieprawda', 'zapomnij o kontuzji kolana'. Odwracalne (restore_knowledge)."""
+    changed = set_knowledge_active(ids, False)
+    return f"Usunięto z aktywnej wiedzy: {changed}" if changed else "Nic nie zmieniono (nieznane id albo już nieaktywne)."
+
+
+def restore_knowledge(ids: list[int]) -> str:
+    """Przywróć wcześniej usunięte/zastąpione wpisy wiedzy ('przywróć 12',
+    'cofnij')."""
+    changed = set_knowledge_active(ids, True)
+    return f"Przywrócono: {changed}" if changed else "Nic nie zmieniono."
+
+
 def get_knowledge(domain: str | None = None, kind: str | None = None, query: str | None = None, include_inactive: bool = False, limit: int = 30) -> list[dict]:
     """Wiedza o użytkowniku spoza danych pomiarowych: fakty z jego notatek/
     streszczeń, wnioski agentów, ustalenia z czatu. W prompcie masz tylko
@@ -162,3 +177,39 @@ def knowledge_from_document(document_id: int, include_inactive: bool = True) -> 
         if not include_inactive:
             stmt = stmt.where(Knowledge.active.is_(True))
         return [_row(k) for k in session.execute(stmt).scalars().all()]
+
+
+SAVE_DOCUMENT_MIN_CHARS = 40
+
+
+def save_document(
+    text: str, *, title: str | None = None, doc_date: dt.date | None = None, source: str = "openbot"
+) -> dict:
+    """Zapisz oryginał notatki w `documents` BEZ wywołania LLM (bez ekstrakcji
+    faktów). Deduplikacja po sha256 tekstu - ten sam tekst nie zapisze się
+    drugi raz. Fakty z notatki dopisuje się osobno (remember_fact)."""
+    from sqlalchemy.exc import IntegrityError
+
+    text = text.strip()
+    if len(text) < SAVE_DOCUMENT_MIN_CHARS:
+        raise ValueError(f"Za krótki tekst na notatkę (min. {SAVE_DOCUMENT_MIN_CHARS} znaków).")
+    sha = sha256_text(text)
+    dup = find_document_by_hash(sha)
+    if dup is not None:
+        return {"id": dup.id, "title": dup.title, "deduplicated": True}
+    final_title = ((title or "").strip() or f"notatka {dt.date.today().isoformat()}")[:256]
+    try:
+        with get_session() as session:
+            doc = Document(
+                title=final_title, source=source[:32], doc_date=doc_date,
+                text=text, summary=None, domains=None, sha256=sha,
+            )
+            session.add(doc)
+            session.flush()
+            doc_id = doc.id
+    except IntegrityError:
+        dup = find_document_by_hash(sha)
+        if dup is None:
+            raise
+        return {"id": dup.id, "title": dup.title, "deduplicated": True}
+    return {"id": doc_id, "title": final_title, "deduplicated": False}

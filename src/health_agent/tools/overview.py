@@ -169,6 +169,13 @@ def _freshness() -> list[dict]:
         ]
 
 
+def get_data_freshness() -> list[dict]:
+    """Świeżość danych: dla każdej pary metryka + źródło `observed_through`
+    (do którego dnia sięgają dane) i `received_at` (kiedy je otrzymano)."""
+    keys = ("metric", "source", "observed_through", "received_at")
+    return [{key: row[key] for key in keys} for row in _freshness()]
+
+
 def overview_payload(days: int, *, end_date: dt.date | None = None) -> dict:
     """Pełny zestaw danych zakładki Przegląd dla okna `days` kończącego się dziś."""
     days = min(max(days, 7), 90)
