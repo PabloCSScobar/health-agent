@@ -101,6 +101,16 @@ class McpToolsTest(unittest.TestCase):
         payload = json.loads(result.content[0].text)
         self.assertEqual(payload, {"date": "2026-01-01", "steps": 1234.5, "when": "2026-01-02T03:04:00+00:00"})
 
+    def test_tool_with_name_and_fn_parameters_is_callable(self) -> None:
+        # add_supplement(name=...) zderzało się z parametrem `name` w run_tool -> TypeError
+        def add_supplement(name: str, fn: str = "x") -> dict:
+            return {"name": name, "fn": fn}
+
+        with patch.dict(server.ALL_TOOLS, {"add_supplement": add_supplement}):
+            mcp = server.build_mcp()
+        result = asyncio.run(mcp.call_tool("add_supplement", {"name": "kreatyna", "fn": "y"}))
+        self.assertEqual(json.loads(result.content[0].text), {"name": "kreatyna", "fn": "y"})
+
     def test_value_error_becomes_polish_tool_error(self) -> None:
         def get_recovery_day(date: dt.date) -> dict:
             raise ValueError("Nieprawidłowa data")

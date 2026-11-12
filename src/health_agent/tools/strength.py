@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from health_agent.db.models import ManualLog, Workout
 from health_agent.db.session import get_session
+from health_agent.time_utils import local_date
 
 MUSCLE_GROUPS = {
     "klatka": ("wyciskanie", "rozpiętki", "rozpietki", "dipy", "pompki", "klatka", "bench"),
@@ -101,19 +102,29 @@ def _parse_log(log: ManualLog) -> dict | None:
             "top_set": best, "volume_kg": round(volume), "sets_detail": sets,
             "e1rm_kg": round(best["kg"] * (1 + best["reps"] / 30), 1) if best and best["kg"] and 0 < best["reps"] <= 12 else None,
         })
-    return {"date": log.logged_at.date().isoformat(), "log_id": log.id, "exercises": exercises,
+    return {"date": _session_date(log, p).isoformat(), "log_id": log.id, "exercises": exercises,
             "volume_kg": round(sum(e["volume_kg"] for e in exercises)), "sets": sum(e["sets"] for e in exercises),
             "note": p.get("notatka") or p.get("note"), "text": log.text_original}
+
+
+def _session_date(log: ManualLog, payload) -> dt.date:
+    """Dzień treningu: `date` z payloadu (wpis z datą wsteczną) albo lokalny dzień zapisu."""
+    raw = payload.get("date") if isinstance(payload, dict) else None
+    if isinstance(raw, str):
+        try:
+            return dt.date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return local_date(log.logged_at)
 
 
 def _sessions(days: int) -> list[dict]:
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
     with get_session() as session:
-        logs = session.execute(
-            select(ManualLog).where(ManualLog.kind == "strength", ManualLog.logged_at >= since).order_by(ManualLog.logged_at)
-        ).scalars().all()
-        parsed = [s for s in (_parse_log(lg) for lg in logs) if s]
-    return parsed
+        # wpis z datą wsteczną ma logged_at = chwila zapisu, więc okno filtrujemy po dniu treningu
+        logs = session.execute(select(ManualLog).where(ManualLog.kind == "strength")).scalars().all()
+        parsed = [s for s in (_parse_log(lg) for lg in logs) if s and s["date"] >= local_date(since).isoformat()]
+    return sorted(parsed, key=lambda s: (s["date"], s["log_id"]))
 
 
 def get_strength_sessions(days: int = 90) -> dict:

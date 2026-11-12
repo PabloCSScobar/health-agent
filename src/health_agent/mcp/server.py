@@ -113,8 +113,11 @@ def to_jsonable(value: Any) -> Any:
     return str(value)
 
 
-async def run_tool(name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Wykonaj funkcję z `tools/` w wątku; błędy zamień na komunikat po polsku."""
+async def run_tool(name: str, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Wykonaj funkcję z `tools/` w wątku; błędy zamień na komunikat po polsku.
+
+    `name` i `fn` są tylko pozycyjne, bo narzędzia mają własne parametry o tych nazwach (np. add_supplement(name=...)).
+    """
     try:
         result = await asyncio.to_thread(fn, *args, **kwargs)
         return to_jsonable(result)
@@ -259,7 +262,10 @@ DESCRIPTION_OVERRIDES: dict[str, str] = {
         "trening siłowy: {'kind':'strength','payload':{'cwiczenia':[{'nazwa':'wyciskanie','serie':4,"
         "'powtorzenia':8,'ciezar_kg':80}]}} - klucze bez polskich znaków, brak ciężaru = pomiń ciezar_kg, "
         "różne serie -> 'serie':[{'powtorzenia':5,'ciezar_kg':100}, ...]. "
-        "'Ważę 87 i spaliłem 2600' to dwa elementy w jednym wywołaniu. Zwraca potwierdzenie zapisu."
+        "'Ważę 87 i spaliłem 2600' to dwa elementy w jednym wywołaniu. "
+        "Pomiar z innego dnia niż dziś (np. historia wag, zaległy trening): dodaj 'date':'YYYY-MM-DD' do payload "
+        "(działa dla weight, strength, daily_calories, wellbeing; data nie może być z przyszłości). "
+        "Zwraca potwierdzenie zapisu."
     ),
 }
 

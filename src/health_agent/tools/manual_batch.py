@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from health_agent.db.models import BodyComposition, DailyActivity, ManualLog
 from health_agent.db.session import get_session
-from health_agent.time_utils import local_today
+from health_agent.time_utils import app_timezone, local_today
 from health_agent.tools.manual import ManualLogEntry, _format_confirmation
 
 _DEDUP_WINDOW_S = 30
@@ -31,10 +31,25 @@ def _event_date(entry: ManualLogEntry) -> dt.date:
     raw = entry.payload["date"]
     if not isinstance(raw, str) or not raw:
         raise ValueError("date musi mieć format YYYY-MM-DD")
-    parsed = dt.date.fromisoformat(raw)
+    try:
+        parsed = dt.date.fromisoformat(raw)
+    except ValueError:
+        raise ValueError("date musi mieć format YYYY-MM-DD") from None
     if parsed.isoformat() != raw:
         raise ValueError("date musi mieć format YYYY-MM-DD")
+    if parsed > local_today():
+        raise ValueError("date nie może być z przyszłości")
     return parsed
+
+
+def _measured_at(entry: ManualLogEntry, logged_at: dt.datetime) -> dt.datetime:
+    """Czas pomiaru: chwila zapisu albo, przy dacie wstecznej w payload, południe tego dnia (czas lokalny)."""
+    if "date" not in entry.payload:
+        return logged_at
+    day = _event_date(entry)
+    if day == local_today():
+        return logged_at
+    return dt.datetime.combine(day, dt.time(12), tzinfo=app_timezone()).astimezone(dt.timezone.utc)
 
 
 def _validate(entries: list[ManualLogEntry]) -> list[ManualLogEntry]:
@@ -94,7 +109,7 @@ def _write_analytical_rows(session, entry: ManualLogEntry, logged_at: dt.datetim
         session.add(
             BodyComposition(
                 source="manual",
-                measured_at=logged_at,
+                measured_at=_measured_at(entry, logged_at),
                 weight_kg=float(entry.payload["weight_kg"]),
                 fat_pct=entry.payload.get("fat_pct"),
             )
