@@ -87,6 +87,9 @@ def _send_summary(period: str) -> None:
     Marker powstaje po potwierdzonej wysyłce: chwilowa awaria może więc dać
     duplikat przy ręcznym retry, ale nie zgubi raportu przed wysłaniem.
     """
+    if settings.telegram_chat_mode == "openbot":
+        logger.info("TELEGRAM_CHAT_MODE=openbot - pomijam podsumowanie %s (wymaga LLM)", period)
+        return
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         logger.warning("Brak TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID - podsumowanie NIE wysłane")
         return

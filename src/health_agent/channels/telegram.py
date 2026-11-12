@@ -145,6 +145,19 @@ async def _tracked_reply(
         raise
 
 
+OPENBOT_MOVED_TEXT = "Czat przeniesiono do OpenBot (agent „Zdrowie”) - tam zadawaj pytania i zapisuj wpisy."
+
+
+def _openbot_mode() -> bool:
+    return settings.telegram_chat_mode == "openbot"
+
+
+async def _reply_moved_to_openbot(update: Update) -> None:
+    """Tryb `openbot`: bot nie wywołuje żadnego LLM, tylko odsyła do OpenBot."""
+    if update.message:
+        await update.message.reply_text(OPENBOT_MOVED_TEXT)
+
+
 def _is_authorized(update: Update) -> bool:
     if not settings.telegram_chat_id:
         logger.error("Brak TELEGRAM_CHAT_ID — odrzucam aktualizację Telegrama")
@@ -233,6 +246,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not _is_authorized(update):
         logger.warning("Odrzucono wiadomość z nieautoryzowanego chat_id=%s", chat_id)
         await update.message.reply_text("Nieautoryzowany dostęp.")
+        return
+
+    if _openbot_mode():
+        await _reply_moved_to_openbot(update)
         return
 
     text = update.message.text
@@ -326,6 +343,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     znaków wiadomości). Tytuł = nazwa pliku, data = z treści (importer) albo
     z podpisu pod plikiem w formacie YYYY-MM-DD."""
     if not _is_authorized(update) or not update.message or not update.message.document:
+        return
+    if _openbot_mode():
+        await _reply_moved_to_openbot(update)
         return
     doc = update.message.document
     name = doc.file_name or "notatka"
@@ -433,12 +453,16 @@ async def cmd_profil(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     facts = get_user_profile()
     lines = ["**Profil:**"] + ([f"- {k}: {v}" for k, v in sorted(facts.items())] or ["- (pusty)"])
-    lines.append("\nZmiana: napisz zwykłą wiadomością, np. \"cel biegowy: półmaraton w marcu\" albo \"kontuzje: brak\".")
-    lines.append("Klucze: " + ", ".join(PROFILE_KEYS))
-    text = "\n".join(lines)
-    onboarding = onboarding_message()
-    if onboarding:
-        text += "\n\n" + onboarding
+    if _openbot_mode():
+        lines.append("\nZmiany profilu zgłaszaj w OpenBot (agent „Zdrowie”).")
+        text = "\n".join(lines)
+    else:
+        lines.append("\nZmiana: napisz zwykłą wiadomością, np. \"cel biegowy: półmaraton w marcu\" albo \"kontuzje: brak\".")
+        lines.append("Klucze: " + ", ".join(PROFILE_KEYS))
+        text = "\n".join(lines)
+        onboarding = onboarding_message()
+        if onboarding:
+            text += "\n\n" + onboarding
     await _tracked_reply(update.message, text, "profil")
 
 
@@ -462,6 +486,9 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _cmd_summary(update: Update, period: str) -> None:
     if not _is_authorized(update) or not update.message:
         return
+    if _openbot_mode():
+        await _reply_moved_to_openbot(update)
+        return
     from zoneinfo import ZoneInfo
 
     from health_agent.agents.summaries import build_daily_summary, build_weekly_summary
@@ -474,6 +501,9 @@ async def _cmd_summary(update: Update, period: str) -> None:
 async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update) or not update.message:
         return
+    if _openbot_mode():
+        await _reply_moved_to_openbot(update)
+        return
     if update.effective_chat:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     await _cmd_summary(update, "daily")
@@ -481,6 +511,9 @@ async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update) or not update.message:
+        return
+    if _openbot_mode():
+        await _reply_moved_to_openbot(update)
         return
     if update.effective_chat:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
